@@ -10,7 +10,33 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
    "matplotlib",
+   "seaborn",
    "numpy",
+   "scipy",
+   "scikit-image",
+   "scikit-learn",
+   "imageio",
+   "pandas",
+   "pandas-stubs",
+   "hydra-core",
+   "omegaconf",
+   "moviepy==1.0.3",
+   "torch",
+   "tqdm",
+   "types-tqdm",
+   "wandb",
+   "cachetools",
+   "pybullet==3.2.7",
+   "pybullet_helpers@git+https://github.com/tomsilver/pybullet-helpers.git",
+   "tomsutils@git+https://github.com/tomsilver/toms-utils.git",
+   "tomsgeoms2d@git+https://github.com/tomsilver/toms-geoms-2d.git",
+   "task_then_motion_planning@git+https://github.com/tomsilver/task-then-motion-planning.git",
+   "relational-structs@git+https://github.com/tomsilver/relational-structs.git",
+   "pybullet-blocks@git+https://github.com/tomsilver/pybullet-blocks.git",
+   "gymnasium>=1.0.0",
+   "stable_baselines3==2.4.0",
+   "types-tabulate",
+   "pytest (>=8.4.2,<9.0.0)",
 ]
 
 [project.optional-dependencies]
@@ -38,22 +64,28 @@ target-version = ["py310"]
 py_version = 310
 profile = "black"
 multi_line_output = 2
-skip_glob = ["venv/*", ".venv/*"]
+src_paths = ["src"]
+skip_glob = ["venv/*"]
 split_on_trailing_comma = true
-
-[tool.docformatter]
-line-length = 88
-wrap-summaries = 88
-wrap-descriptions = 88
 
 [tool.mypy]
 strict_equality = true
 disallow_untyped_calls = true
+disable_error_code = ["method-assign"]
 warn_unreachable = true
-exclude = ["venv/*", ".venv/*"]
+exclude = ["venv/*"]
 
 [[tool.mypy.overrides]]
 module = [
     "matplotlib.*",
+    "scipy.*",
+    "skimage.*",
+    "assistive_gym.*",
+    "pybullet.*",
+    "seaborn.*",
+    "moviepy.*",
+    "sklearn.*",
+    "graphviz.*",
+    "cachetools.*",
 ]
 ignore_missing_imports = true
