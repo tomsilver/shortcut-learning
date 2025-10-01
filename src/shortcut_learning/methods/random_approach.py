@@ -27,4 +27,3 @@ class RandomApproach(BaseApproach[ObsType, ActType]):
     ) -> ApproachStepResult[ActType]:
         """Take random action."""
         return ApproachStepResult(action=self.system.env.action_space.sample())
-

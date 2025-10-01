@@ -1,7 +1,7 @@
 """Base environment interface."""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Generic, Protocol, TypeVar
 
 import gymnasium as gym
@@ -129,4 +129,3 @@ class ImprovisationalTAMPSystem(BaseTAMPSystem[ObsType, ActType], ABC):
     @abstractmethod
     def _create_wrapped_env(self, components: PlanningComponents[ObsType]) -> gym.Env:
         """Create the wrapped environment for training."""
-

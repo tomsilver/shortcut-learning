@@ -37,6 +37,7 @@ dependencies = [
    "stable_baselines3==2.4.0",
    "types-tabulate",
    "pytest (>=8.4.2,<9.0.0)",
+   "black (>=25.9.0,<26.0.0)",
 ]
 
 [project.optional-dependencies]

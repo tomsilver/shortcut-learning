@@ -103,4 +103,3 @@ def test_obstacle2d_env():
             break
 
     env.close()
-

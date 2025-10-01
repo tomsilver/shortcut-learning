@@ -5,12 +5,11 @@ from gymnasium.wrappers import TimeLimit
 from task_then_motion_planning.planning import TaskThenMotionPlanner
 
 from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
+
 # from tamp_improv.benchmarks.obstacle2d_graph import BaseGraphObstacle2DTAMPSystem
 
 
-@pytest.mark.parametrize(
-    "system_cls", [BaseObstacle2DTAMPSystem]
-)
+@pytest.mark.parametrize("system_cls", [BaseObstacle2DTAMPSystem])
 def test_obstacle2d_tamp_system(system_cls):
     """Test Obstacle2D environment with TAMP planner."""
     # Create TAMP system
@@ -65,4 +64,3 @@ def test_obstacle2d_tamp_system(system_cls):
         print("Episode didn't finish within 100 steps")
 
     env.close()
-

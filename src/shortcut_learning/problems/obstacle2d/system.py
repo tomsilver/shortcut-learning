@@ -29,6 +29,7 @@ from shortcut_learning.problems.obstacle2d.env import (
     Obstacle2DEnv,
     is_block_in_target_area,
 )
+
 # from tamp_improv.benchmarks.wrappers import ImprovWrapper
 
 
@@ -589,7 +590,6 @@ class Obstacle2DTAMPSystem(
         """Create wrapped environment for training."""
 
         return self.env
-    
         # return ImprovWrapper(
         #     base_env=self.env,
         #     perceiver=components.perceiver,
@@ -620,4 +620,3 @@ class Obstacle2DTAMPSystem(
         }
         system.components.skills.update(skills)
         return system
-

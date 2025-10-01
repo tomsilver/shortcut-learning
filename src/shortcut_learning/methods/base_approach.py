@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from shortcut_learning.problems.base_tamp import BaseTAMPSystem, ImprovisationalTAMPSystem
+from shortcut_learning.problems.base_tamp import BaseTAMPSystem
 
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
@@ -22,9 +22,7 @@ class ApproachStepResult(Generic[ActType]):
 class BaseApproach(Generic[ObsType, ActType], ABC):
     """Base class for all approaches."""
 
-    def __init__(
-        self, system: BaseTAMPSystem[ObsType, ActType], seed: int
-    ) -> None:
+    def __init__(self, system: BaseTAMPSystem[ObsType, ActType], seed: int) -> None:
         """Initialize approach.
 
         Args:

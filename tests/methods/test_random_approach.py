@@ -36,4 +36,3 @@ def test_random_approach(system_cls, max_steps):
 
     steps = run_episode(system, approach, max_steps)
     assert steps <= max_steps
-

@@ -6,7 +6,7 @@ from typing import Any, NamedTuple
 
 import gymnasium as gym
 import numpy as np
-from gymnasium.spaces import Box, Graph, GraphInstance
+from gymnasium.spaces import Box, GraphInstance
 from matplotlib import pyplot as plt
 from numpy.typing import NDArray
 from tomsgeoms2d.structs import Rectangle
@@ -87,8 +87,6 @@ def is_block_in_target_area(
         and target_bottom <= block_bottom
         and block_top <= target_top
     )
-
-
 
 
 class Obstacle2DEnv(gym.Env):
@@ -490,4 +488,3 @@ class Obstacle2DEnv(gym.Env):
         clone_env = Obstacle2DEnv(self.render_mode)
         clone_env.reset_from_state(self.state)
         return clone_env
-
