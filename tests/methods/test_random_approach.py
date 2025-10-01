@@ -3,7 +3,7 @@
 import pytest
 
 from shortcut_learning.methods.random_approach import RandomApproach
-from shortcut_learning.problems.obstacle2d.obstacle2d_system import Obstacle2DTAMPSystem
+from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
 
 
 def run_episode(system, approach, max_steps):
@@ -27,7 +27,7 @@ def run_episode(system, approach, max_steps):
 
 @pytest.mark.parametrize(
     "system_cls,max_steps",
-    [(Obstacle2DTAMPSystem, 100)],
+    [(BaseObstacle2DTAMPSystem, 100)],
 )
 def test_random_approach(system_cls, max_steps):
     """Test random approach on different environments."""

@@ -3,7 +3,7 @@
 import numpy as np
 from gymnasium.wrappers import TimeLimit
 
-from shortcut_learning.problems.obstacle2d.obstacle2d_env import Obstacle2DEnv
+from shortcut_learning.problems.obstacle2d.env import Obstacle2DEnv
 
 
 # def test_graph_obstacle2d_env():

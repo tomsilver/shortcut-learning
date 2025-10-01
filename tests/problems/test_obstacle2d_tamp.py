@@ -4,7 +4,7 @@ import pytest
 from gymnasium.wrappers import TimeLimit
 from task_then_motion_planning.planning import TaskThenMotionPlanner
 
-from shortcut_learning.problems.obstacle2d.obstacle2d_system import BaseObstacle2DTAMPSystem
+from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
 # from tamp_improv.benchmarks.obstacle2d_graph import BaseGraphObstacle2DTAMPSystem
 
 

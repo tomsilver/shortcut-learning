@@ -25,7 +25,7 @@ from shortcut_learning.problems.base_tamp import (
     ImprovisationalTAMPSystem,
     PlanningComponents,
 )
-from shortcut_learning.problems.obstacle2d.obstacle2d_env import (
+from shortcut_learning.problems.obstacle2d.env import (
     Obstacle2DEnv,
     is_block_in_target_area,
 )
