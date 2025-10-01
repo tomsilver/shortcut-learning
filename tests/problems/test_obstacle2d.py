@@ -5,7 +5,6 @@ from gymnasium.wrappers import TimeLimit
 
 from shortcut_learning.problems.obstacle2d.env import Obstacle2DEnv
 
-
 # def test_graph_obstacle2d_env():
 #     """Test basic functionality of Obstacle2D environment."""
 #     env = GraphObstacle2DEnv(n_blocks=3, render_mode="rgb_array")

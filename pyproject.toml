@@ -7,7 +7,7 @@ name = "shortcut_learning"
 version = "0.1.0"
 description = "Shortcut learning."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<4.0"
 dependencies = [
    "matplotlib",
    "seaborn",
@@ -38,6 +38,8 @@ dependencies = [
    "types-tabulate",
    "pytest (>=8.4.2,<9.0.0)",
    "black (>=25.9.0,<26.0.0)",
+   "docformatter (>=1.7.7,<2.0.0)",
+   "isort (>=6.1.0,<7.0.0)",
 ]
 
 [project.optional-dependencies]
