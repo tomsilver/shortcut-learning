@@ -1,6 +1,5 @@
 .DS_Store
 .python-version
-poetry.lock
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
