@@ -1,39 +1,32 @@
 """Training utilities for improvisational approaches."""
 
 import inspect
-import pickle
 import time
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import numpy as np
-import torch
 from gymnasium.wrappers import RecordVideo
-
-from shortcut_learning.methods.policies.base import Policy
-from shortcut_learning.methods.policies.rl_ppo import RLPolicy
-
-from shortcut_learning.problems.base_tamp import ImprovisationalTAMPSystem
-
-from shortcut_learning.methods.base_approach import BaseApproach
-from shortcut_learning.methods.random_approach import RandomApproach
-from shortcut_learning.methods.pure_rl_approach import PureRLApproach
-
-from shortcut_learning.methods.training_data import TrainingData
 
 from shortcut_learning.configs import (
     ApproachConfig,
-    PolicyConfig,
     CollectionConfig,
+    EvaluationConfig,
+    PolicyConfig,
     TrainingConfig,
-    EvaluationConfig
 )
+from shortcut_learning.methods.base_approach import BaseApproach
+from shortcut_learning.methods.policies.base import Policy
+from shortcut_learning.methods.policies.rl_ppo import RLPolicy
+from shortcut_learning.methods.pure_rl_approach import PureRLApproach
+from shortcut_learning.methods.random_approach import RandomApproach
+from shortcut_learning.methods.training_data import TrainingData
+from shortcut_learning.problems.base_tamp import ImprovisationalTAMPSystem
 
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
-
 
 
 @dataclass
@@ -49,12 +42,15 @@ class Metrics:
 
 
 def initialize_policy(
-    policy_config: PolicyConfig,
-    seed: int = 42
+    policy_config: PolicyConfig, seed: int = 42
 ) -> Policy[ObsType, ActType]:
-    
+    """Initialize the policy."""
+
     if policy_config.policy_type == "rl_ppo":
         return RLPolicy(seed, policy_config)
+
+    raise NotImplementedError
+
 
 def initialize_approach(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
@@ -62,39 +58,47 @@ def initialize_approach(
     policy_config: PolicyConfig,
     seed: int = 42,
 ) -> BaseApproach[ObsType, ActType]:
+    """Initialize an approach."""
     if approach_config.approach_type == "random":
         return RandomApproach(system, seed, approach_config.approach_name)
-    
+
     if approach_config.approach_type == "pure_rl":
-        policy = initialize_policy(policy_config)
+        policy: Policy[ObsType, ActType] = initialize_policy(policy_config)
         return PureRLApproach(system, seed, approach_config.approach_name, policy)
-    
-def collect_approach(
-    system: ImprovisationalTAMPSystem[ObsType, ActType],
+
+    raise NotImplementedError
+
+
+def collect_approach(  # pylint: disable=useless-return
     approach: BaseApproach[ObsType, ActType],
-    collect_config: CollectionConfig
+    collect_config: CollectionConfig,
 ) -> TrainingData | None:
+    """Collect data for an approach."""
+    # Coming soon:
     # return collect_training_data(collect_config, ...)
+    del approach, collect_config
     return None
-    
-    
+
+
 def train_approach(
-    system: ImprovisationalTAMPSystem[ObsType, ActType],
     approach: BaseApproach[ObsType, ActType],
-    train_config: TrainingConfig, 
-    train_data: TrainingData | None  
+    train_config: TrainingConfig,
+    train_data: TrainingData | None,
 ) -> BaseApproach[ObsType, ActType]:
+    """Train an approach."""
 
     approach.train(train_data, train_config)
 
     return approach
 
+
 def evaluate_approach(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
     approach: BaseApproach[ObsType, ActType],
-    eval_config: EvaluationConfig
+    eval_config: EvaluationConfig,
 ) -> Metrics:
-    
+    """Evaluate the approach."""
+
     # Run evaluation episodes
     print(f"\nEvaluating policy on {system.name}...")
     rewards = []
@@ -122,21 +126,26 @@ def evaluate_approach(
         avg_episode_length=float(np.mean(lengths)),
         avg_reward=float(np.mean(rewards)),
     )
-    
+
+
 def collect_train_evaluate_approach(
-        system: ImprovisationalTAMPSystem[ObsType, ActType],
-        approach: BaseApproach[ObsType, ActType],
-        collect_config: CollectionConfig,
-        train_config: TrainingConfig,
-        eval_config: EvaluationConfig
+    system: ImprovisationalTAMPSystem[ObsType, ActType],
+    approach: BaseApproach[ObsType, ActType],
+    collect_config: CollectionConfig,
+    train_config: TrainingConfig,
+    eval_config: EvaluationConfig,
 ):
+    """Collect, train, and evaluate the approach."""
+
     start_time = time.time()
 
-    train_data = collect_approach(system, approach, collect_config)
-    
+    train_data = collect_approach(  # pylint: disable=assignment-from-none
+        approach, collect_config
+    )
+
     collect_time = time.time()
 
-    trained_approach = train_approach(system, approach, train_config, train_data)
+    trained_approach = train_approach(approach, train_config, train_data)
 
     train_time = time.time()
 
@@ -150,11 +159,12 @@ def collect_train_evaluate_approach(
 
     return metrics
 
+
 def run_evaluation_episode(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
     approach: BaseApproach[ObsType, ActType],
     eval_config: EvaluationConfig,
-    episode_num: int = 0
+    episode_num: int = 0,
 ) -> tuple[float, int, bool]:
     """Run single evaluation episode."""
     # Set up rendering if available
@@ -214,15 +224,18 @@ def run_evaluation_episode(
 
     return total_reward, step_count, success
 
+
 def pipeline_from_configs(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
     approach_config: ApproachConfig,
     policy_config: PolicyConfig,
     collect_config: CollectionConfig,
     train_config: TrainingConfig,
-    eval_config: EvaluationConfig
+    eval_config: EvaluationConfig,
 ) -> Metrics:
+    """Run the pipeline from configs."""
     approach = initialize_approach(system, approach_config, policy_config)
 
-    return collect_train_evaluate_approach(system, approach, collect_config, train_config, eval_config)
-
+    return collect_train_evaluate_approach(
+        system, approach, collect_config, train_config, eval_config
+    )

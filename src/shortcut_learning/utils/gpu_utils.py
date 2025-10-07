@@ -94,4 +94,3 @@ def get_gpu_memory_info() -> Union[str, list[dict[str, Any]]]:
         )
 
     return memory_info
-

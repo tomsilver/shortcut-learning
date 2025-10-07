@@ -1,23 +1,18 @@
 """Configs for training."""
 
-import inspect
-import pickle
-import time
-from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from typing import Any
 
-import numpy as np
-import torch
 
 @dataclass
 class ApproachConfig:
-    """Configuration for general approach"""
+    """Configuration for general approach."""
 
     approach_type: str
 
     approach_name: str
+
 
 @dataclass
 class PolicyConfig:
@@ -31,7 +26,6 @@ class PolicyConfig:
     gamma: float = 0.99
     ent_coef: float = 0.01
     device: str = "cuda"
-
 
 
 @dataclass
@@ -83,8 +77,10 @@ class TrainingConfig:
         """Get path for training data for specific system."""
         return Path(self.training_data_dir) / system_name
 
+
 @dataclass
 class EvaluationConfig:
+    """An evaluation config."""
 
     seed: int = 42
 
@@ -93,7 +89,9 @@ class EvaluationConfig:
     max_steps: int = 100
     num_episodes: int = 100
 
+
 @dataclass
 class CollectionConfig:
+    """Config for data collection."""
 
     seed: int = 42

@@ -1,13 +1,13 @@
+"""Training data."""
+
 from __future__ import annotations
 
 import json
 import pickle
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
-import gymnasium as gym
 from relational_structs import GroundAtom
 
 ObsType = TypeVar("ObsType")
@@ -147,6 +147,3 @@ class GoalConditionedTrainingData(TrainingData, Generic[ObsType]):
             valid_shortcuts=valid_shortcuts,
             node_atoms=node_atoms,
         )
-
-
-

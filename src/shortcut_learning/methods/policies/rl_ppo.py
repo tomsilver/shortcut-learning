@@ -1,6 +1,5 @@
 """RL-based policy implementation."""
 
-from dataclasses import dataclass
 from typing import cast
 
 import gymnasium as gym
@@ -10,6 +9,9 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from torch import Tensor
 
+from shortcut_learning.configs import (
+    PolicyConfig,
+)
 from shortcut_learning.methods.policies.base import (
     ActType,
     ObsType,
@@ -17,16 +19,6 @@ from shortcut_learning.methods.policies.base import (
     TrainingData,
 )
 from shortcut_learning.utils.gpu_utils import DeviceContext
-
-from shortcut_learning.configs import (
-    ApproachConfig,
-    PolicyConfig,
-    CollectionConfig,
-    TrainingConfig,
-    EvaluationConfig
-)
-
-
 
 
 class TrainingProgressCallback(BaseCallback):
@@ -198,11 +190,10 @@ class RLPolicy(Policy[ObsType, ActType]):
         self,
         env: gym.Env,
         train_data: TrainingData | None,
-        train_config: TrainingConfig,
         callback: BaseCallback | None = None,
     ) -> None:
         """Train policy."""
-        
+
         # Handle pure RL training without training data
         if train_data is None:
             print("\nTraining in pure RL mode with direct environment interaction")
@@ -300,4 +291,3 @@ class RLPolicy(Policy[ObsType, ActType]):
     def load(self, path: str) -> None:
         """Load policy."""
         self.model = PPO.load(path)
-

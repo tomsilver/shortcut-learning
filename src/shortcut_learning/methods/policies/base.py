@@ -2,18 +2,14 @@
 
 from __future__ import annotations
 
-import json
-import pickle
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 import gymnasium as gym
 from relational_structs import GroundAtom
 
 from shortcut_learning.methods.training_data import TrainingData
-
 
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
@@ -26,7 +22,7 @@ class PolicyContext(Generic[ObsType, ActType]):
     goal_atoms: set[GroundAtom]
     current_atoms: set[GroundAtom]
     info: dict[str, Any] = field(default_factory=dict)
-    
+
 
 class Policy(Generic[ObsType, ActType], ABC):
     """Base class for policies."""
@@ -75,4 +71,3 @@ class Policy(Generic[ObsType, ActType], ABC):
     @abstractmethod
     def load(self, path: str) -> None:
         """Load policy from disk."""
-
