@@ -1,0 +1,6 @@
+seed: 0
+
+defaults:
+  - _self_
+  - approach: random
+  - system: obstacle2d

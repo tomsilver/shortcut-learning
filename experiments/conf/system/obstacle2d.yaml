@@ -1,0 +1,2 @@
+_target_: hydra.utils.get_class
+path: "shortcut_learning.problems.obstacle2d.system.BaseObstacle2DTAMPSystem"
