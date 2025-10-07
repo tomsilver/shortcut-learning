@@ -4,6 +4,8 @@ import pytest
 
 from shortcut_learning.methods.random_approach import RandomApproach
 from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
+from shortcut_learning.configs import *
+from shortcut_learning.methods.pipeline import *
 
 
 def run_episode(system, approach, max_steps):
@@ -32,7 +34,37 @@ def run_episode(system, approach, max_steps):
 def test_random_approach(system_cls, max_steps):
     """Test random approach on different environments."""
     system = system_cls.create_default(seed=42)
-    approach = RandomApproach(system, seed=42)
+    
+    approach_config = ApproachConfig(
+        approach_type="random",
+        approach_name="example"
+    )
 
-    steps = run_episode(system, approach, max_steps)
-    assert steps <= max_steps
+    policy_config = PolicyConfig()
+
+    collect_config = CollectionConfig()
+    train_config = TrainingConfig()
+    eval_config = EvaluationConfig()
+
+    approach = initialize_approach(system, approach_config, policy_config)
+
+    print(approach)
+
+    train_data = collect_approach(system, approach, collect_config)
+
+    trained_approach = train_approach(system, approach, train_config, train_data)
+
+    metrics = evaluate_approach(system, trained_approach, eval_config)
+
+    print(metrics)
+
+    assert metrics is not None
+
+    # approach = RandomApproach(system, seed=42)
+
+    # steps = run_episode(system, approach, max_steps)
+    # assert steps <= max_steps
+
+
+if __name__ == "__main__":
+    test_random_approach(BaseObstacle2DTAMPSystem, 100)
