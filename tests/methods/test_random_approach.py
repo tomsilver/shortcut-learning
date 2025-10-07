@@ -31,8 +31,6 @@ def test_random_approach():
 
     approach = initialize_approach(system, approach_config, policy_config)
 
-    print(approach)
-
     train_data = collect_approach(  # pylint: disable=assignment-from-none
         approach, collect_config
     )
