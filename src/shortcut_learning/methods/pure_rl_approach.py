@@ -1,29 +1,25 @@
 """Pure RL baseline approach without using TAMP structure."""
 
-from typing import Any, TypeVar
-
-from shortcut_learning.methods.base_approach import ApproachStepResult, BaseApproach
-from shortcut_learning.methods.policies.base import Policy
-from shortcut_learning.methods.training_data import TrainingData
-
-from shortcut_learning.configs import (
-    ApproachConfig,
-    PolicyConfig,
-    CollectionConfig,
-    TrainingConfig,
-    EvaluationConfig
-)
-
-from shortcut_learning.problems.base_tamp import ImprovisationalTAMPSystem
-
-from task_then_motion_planning.structs import Perceiver
-from relational_structs import GroundAtom
 from pathlib import Path
-
-from gymnasium.wrappers import RecordVideo
+from typing import Any, TypeVar
 
 import gymnasium as gym
 import numpy as np
+from gymnasium.wrappers import RecordVideo
+from relational_structs import GroundAtom
+from task_then_motion_planning.structs import Perceiver
+
+from shortcut_learning.configs import (
+    ApproachConfig,
+    CollectionConfig,
+    EvaluationConfig,
+    PolicyConfig,
+    TrainingConfig,
+)
+from shortcut_learning.methods.base_approach import ApproachStepResult, BaseApproach
+from shortcut_learning.methods.policies.base import Policy
+from shortcut_learning.methods.training_data import TrainingData
+from shortcut_learning.problems.base_tamp import ImprovisationalTAMPSystem
 
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
@@ -85,7 +81,8 @@ class PureRLWrapper(gym.Wrapper):
         truncated = truncated or self.steps >= self.max_episode_steps
 
         return obs, reward, terminated, truncated, info
-    
+
+
 class PureRLApproach(BaseApproach[ObsType, ActType]):
     """Pure RL approach that doesn't use TAMP structure."""
 
@@ -99,7 +96,6 @@ class PureRLApproach(BaseApproach[ObsType, ActType]):
         """Initialize approach."""
         super().__init__(system, seed, name)
         self.policy = policy
-        
 
     def reset(self, obs: ObsType, info: dict[str, Any]) -> ApproachStepResult[ActType]:
         """Reset approach with initial observation."""
@@ -117,12 +113,8 @@ class PureRLApproach(BaseApproach[ObsType, ActType]):
         action = self.policy.get_action(obs)
         return ApproachStepResult(action=action)
 
-    def train(
-        self,
-        train_data: TrainingData | None,
-        config: TrainingConfig
-    ):
-        
+    def train(self, train_data: TrainingData | None, config: TrainingConfig):
+
         obs, info = self.system.reset()
         _, _, goal_atoms = self.system.perceiver.reset(obs, info)
 

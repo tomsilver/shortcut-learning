@@ -31,16 +31,16 @@ def run_episode(system, approach, max_steps):
     "system_cls,max_steps",
     [(BaseObstacle2DTAMPSystem, 100)],
 )
-def test_random_approach(system_cls, max_steps):
+def test_pure_rl_approach(system_cls, max_steps):
     """Test random approach on different environments."""
     system = system_cls.create_default(seed=42)
 
-    approach_config = ApproachConfig(approach_type="random", approach_name="example")
+    approach_config = ApproachConfig(approach_type="pure_rl", approach_name="example")
 
     policy_config = PolicyConfig()
 
     collect_config = CollectionConfig()
-    train_config = TrainingConfig()
+    train_config = TrainingConfig(num_episodes=1)
     eval_config = EvaluationConfig()
 
     approach = initialize_approach(system, approach_config, policy_config)
@@ -50,6 +50,7 @@ def test_random_approach(system_cls, max_steps):
     train_data = collect_approach(system, approach, collect_config)
 
     trained_approach = train_approach(system, approach, train_config, train_data)
+    # trained_approach = approach
 
     metrics = evaluate_approach(system, trained_approach, eval_config)
 
@@ -64,4 +65,4 @@ def test_random_approach(system_cls, max_steps):
 
 
 if __name__ == "__main__":
-    test_random_approach(BaseObstacle2DTAMPSystem, 100)
+    test_pure_rl_approach(BaseObstacle2DTAMPSystem, 100)

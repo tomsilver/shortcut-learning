@@ -4,16 +4,15 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from shortcut_learning.problems.base_tamp import BaseTAMPSystem
-from shortcut_learning.methods.training_data import TrainingData
-
 from shortcut_learning.configs import (
     ApproachConfig,
-    PolicyConfig,
     CollectionConfig,
+    EvaluationConfig,
+    PolicyConfig,
     TrainingConfig,
-    EvaluationConfig
 )
+from shortcut_learning.methods.training_data import TrainingData
+from shortcut_learning.problems.base_tamp import BaseTAMPSystem
 
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
@@ -31,7 +30,9 @@ class ApproachStepResult(Generic[ActType]):
 class BaseApproach(Generic[ObsType, ActType], ABC):
     """Base class for all approaches."""
 
-    def __init__(self, system: BaseTAMPSystem[ObsType, ActType], seed: int, name: str) -> None:
+    def __init__(
+        self, system: BaseTAMPSystem[ObsType, ActType], seed: int, name: str
+    ) -> None:
         """Initialize approach.
 
         Args:
@@ -69,9 +70,5 @@ class BaseApproach(Generic[ObsType, ActType], ABC):
         """Step approach with new observation."""
 
     @abstractmethod
-    def train(
-        self,
-        train_data: TrainingData | None,
-        config: TrainingConfig
-    ) -> None:
+    def train(self, train_data: TrainingData | None, config: TrainingConfig) -> None:
         """Train approach with optional training data."""

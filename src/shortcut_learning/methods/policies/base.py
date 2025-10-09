@@ -14,7 +14,6 @@ from relational_structs import GroundAtom
 
 from shortcut_learning.methods.training_data import TrainingData
 
-
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
 
@@ -26,7 +25,7 @@ class PolicyContext(Generic[ObsType, ActType]):
     goal_atoms: set[GroundAtom]
     current_atoms: set[GroundAtom]
     info: dict[str, Any] = field(default_factory=dict)
-    
+
 
 class Policy(Generic[ObsType, ActType], ABC):
     """Base class for policies."""
@@ -75,4 +74,3 @@ class Policy(Generic[ObsType, ActType], ABC):
     @abstractmethod
     def load(self, path: str) -> None:
         """Load policy from disk."""
-

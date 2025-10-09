@@ -2,22 +2,21 @@
 
 from typing import Any
 
+from shortcut_learning.configs import (
+    ApproachConfig,
+    CollectionConfig,
+    EvaluationConfig,
+    PolicyConfig,
+    TrainingConfig,
+)
 from shortcut_learning.methods.base_approach import (
     ActType,
     ApproachStepResult,
     BaseApproach,
     ObsType,
 )
-
 from shortcut_learning.methods.training_data import TrainingData
 
-from shortcut_learning.configs import (
-    ApproachConfig,
-    PolicyConfig,
-    CollectionConfig,
-    TrainingConfig,
-    EvaluationConfig
-)
 
 class RandomApproach(BaseApproach[ObsType, ActType]):
     """An approach that takes random actions."""
@@ -37,11 +36,6 @@ class RandomApproach(BaseApproach[ObsType, ActType]):
         """Take random action."""
         return ApproachStepResult(action=self.system.env.action_space.sample())
 
-    def train(
-        self,
-        train_data: TrainingData | None,
-        config: TrainingConfig
-    ) -> None:
+    def train(self, train_data: TrainingData | None, config: TrainingConfig) -> None:
         """Train approach with optional training data."""
         return
-    

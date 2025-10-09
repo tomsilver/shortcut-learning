@@ -11,13 +11,15 @@ from typing import Any, Callable, TypeVar, cast
 import numpy as np
 import torch
 
+
 @dataclass
 class ApproachConfig:
-    """Configuration for general approach"""
+    """Configuration for general approach."""
 
     approach_type: str
 
     approach_name: str
+
 
 @dataclass
 class PolicyConfig:
@@ -31,7 +33,6 @@ class PolicyConfig:
     gamma: float = 0.99
     ent_coef: float = 0.01
     device: str = "cuda"
-
 
 
 @dataclass
@@ -83,6 +84,7 @@ class TrainingConfig:
         """Get path for training data for specific system."""
         return Path(self.training_data_dir) / system_name
 
+
 @dataclass
 class EvaluationConfig:
 
@@ -92,6 +94,7 @@ class EvaluationConfig:
     select_random_goal: bool = False
     max_steps: int = 100
     num_episodes: int = 100
+
 
 @dataclass
 class CollectionConfig:

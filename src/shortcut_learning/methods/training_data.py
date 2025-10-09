@@ -147,6 +147,3 @@ class GoalConditionedTrainingData(TrainingData, Generic[ObsType]):
             valid_shortcuts=valid_shortcuts,
             node_atoms=node_atoms,
         )
-
-
-
