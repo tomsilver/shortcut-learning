@@ -1,6 +1,5 @@
 """RL-based policy implementation."""
 
-from dataclasses import dataclass
 from typing import cast
 
 import gymnasium as gym
@@ -11,11 +10,15 @@ from stable_baselines3.common.callbacks import BaseCallback
 from torch import Tensor
 
 from shortcut_learning.configs import (
+<<<<<<< HEAD
     ApproachConfig,
     CollectionConfig,
     EvaluationConfig,
     PolicyConfig,
     TrainingConfig,
+=======
+    PolicyConfig,
+>>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 )
 from shortcut_learning.methods.policies.base import (
     ActType,

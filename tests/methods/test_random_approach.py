@@ -1,39 +1,25 @@
 """Test base random approach."""
 
-import pytest
-
-from shortcut_learning.configs import *
-from shortcut_learning.methods.pipeline import *
-from shortcut_learning.methods.random_approach import RandomApproach
+from shortcut_learning.configs import (
+    ApproachConfig,
+    CollectionConfig,
+    EvaluationConfig,
+    PolicyConfig,
+    TrainingConfig,
+)
+from shortcut_learning.methods.pipeline import (
+    Metrics,
+    collect_approach,
+    evaluate_approach,
+    initialize_approach,
+    train_approach,
+)
 from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
 
 
-def run_episode(system, approach, max_steps):
-    """Run single episode with approach."""
-    obs, info = system.reset()
-    step_result = approach.reset(obs, info)
-
-    # Process first step
-    obs, reward, terminated, truncated, info = system.env.step(step_result.action)
-    if terminated or truncated:
-        return 1
-
-    # Process remaining steps
-    for step in range(1, max_steps):
-        step_result = approach.step(obs, reward, terminated, truncated, info)
-        obs, reward, terminated, truncated, info = system.env.step(step_result.action)
-        if terminated or truncated:
-            return step + 1
-    return max_steps
-
-
-@pytest.mark.parametrize(
-    "system_cls,max_steps",
-    [(BaseObstacle2DTAMPSystem, 100)],
-)
-def test_random_approach(system_cls, max_steps):
+def test_random_approach():
     """Test random approach on different environments."""
-    system = system_cls.create_default(seed=42)
+    system = BaseObstacle2DTAMPSystem.create_default(seed=42)
 
     approach_config = ApproachConfig(approach_type="random", approach_name="example")
 
@@ -41,27 +27,15 @@ def test_random_approach(system_cls, max_steps):
 
     collect_config = CollectionConfig()
     train_config = TrainingConfig()
-    eval_config = EvaluationConfig()
+    eval_config = EvaluationConfig(num_episodes=1)
 
     approach = initialize_approach(system, approach_config, policy_config)
 
-    print(approach)
+    train_data = collect_approach(  # pylint: disable=assignment-from-none
+        approach, collect_config
+    )
 
-    train_data = collect_approach(system, approach, collect_config)
-
-    trained_approach = train_approach(system, approach, train_config, train_data)
+    trained_approach = train_approach(approach, train_config, train_data)
 
     metrics = evaluate_approach(system, trained_approach, eval_config)
-
-    print(metrics)
-
-    assert metrics is not None
-
-    # approach = RandomApproach(system, seed=42)
-
-    # steps = run_episode(system, approach, max_steps)
-    # assert steps <= max_steps
-
-
-if __name__ == "__main__":
-    test_random_approach(BaseObstacle2DTAMPSystem, 100)
+    assert isinstance(metrics, Metrics)

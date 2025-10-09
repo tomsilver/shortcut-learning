@@ -1,15 +1,13 @@
 """Training utilities for improvisational approaches."""
 
 import inspect
-import pickle
 import time
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import numpy as np
-import torch
 from gymnasium.wrappers import RecordVideo
 
 from shortcut_learning.configs import (
@@ -46,10 +44,19 @@ class Metrics:
 def initialize_policy(
     policy_config: PolicyConfig, seed: int = 42
 ) -> Policy[ObsType, ActType]:
+<<<<<<< HEAD
+=======
+    """Initialize the policy."""
+>>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
     if policy_config.policy_type == "rl_ppo":
         return RLPolicy(seed, policy_config)
 
+<<<<<<< HEAD
+=======
+    raise NotImplementedError
+
+>>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
 def initialize_approach(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
@@ -57,29 +64,40 @@ def initialize_approach(
     policy_config: PolicyConfig,
     seed: int = 42,
 ) -> BaseApproach[ObsType, ActType]:
+    """Initialize an approach."""
     if approach_config.approach_type == "random":
         return RandomApproach(system, seed, approach_config.approach_name)
 
     if approach_config.approach_type == "pure_rl":
-        policy = initialize_policy(policy_config)
+        policy: Policy[ObsType, ActType] = initialize_policy(policy_config)
         return PureRLApproach(system, seed, approach_config.approach_name, policy)
 
+<<<<<<< HEAD
 
 def collect_approach(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
+=======
+    raise NotImplementedError
+
+
+def collect_approach(  # pylint: disable=useless-return
+>>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
     approach: BaseApproach[ObsType, ActType],
     collect_config: CollectionConfig,
 ) -> TrainingData | None:
+    """Collect data for an approach."""
+    # Coming soon:
     # return collect_training_data(collect_config, ...)
+    del approach, collect_config
     return None
 
 
 def train_approach(
-    system: ImprovisationalTAMPSystem[ObsType, ActType],
     approach: BaseApproach[ObsType, ActType],
     train_config: TrainingConfig,
     train_data: TrainingData | None,
 ) -> BaseApproach[ObsType, ActType]:
+    """Train an approach."""
 
     approach.train(train_data, train_config)
 
@@ -91,6 +109,10 @@ def evaluate_approach(
     approach: BaseApproach[ObsType, ActType],
     eval_config: EvaluationConfig,
 ) -> Metrics:
+<<<<<<< HEAD
+=======
+    """Evaluate the approach."""
+>>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
     # Run evaluation episodes
     print(f"\nEvaluating policy on {system.name}...")
@@ -128,13 +150,21 @@ def collect_train_evaluate_approach(
     train_config: TrainingConfig,
     eval_config: EvaluationConfig,
 ):
+    """Collect, train, and evaluate the approach."""
+
     start_time = time.time()
 
+<<<<<<< HEAD
     train_data = collect_approach(system, approach, collect_config)
+=======
+    train_data = collect_approach(  # pylint: disable=assignment-from-none
+        approach, collect_config
+    )
+>>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
     collect_time = time.time()
 
-    trained_approach = train_approach(system, approach, train_config, train_data)
+    trained_approach = train_approach(approach, train_config, train_data)
 
     train_time = time.time()
 
@@ -222,6 +252,7 @@ def pipeline_from_configs(
     train_config: TrainingConfig,
     eval_config: EvaluationConfig,
 ) -> Metrics:
+    """Run the pipeline from configs."""
     approach = initialize_approach(system, approach_config, policy_config)
 
     return collect_train_evaluate_approach(

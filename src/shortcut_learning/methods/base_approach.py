@@ -5,10 +5,13 @@ from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
 from shortcut_learning.configs import (
+<<<<<<< HEAD
     ApproachConfig,
     CollectionConfig,
     EvaluationConfig,
     PolicyConfig,
+=======
+>>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
     TrainingConfig,
 )
 from shortcut_learning.methods.training_data import TrainingData

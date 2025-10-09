@@ -1,15 +1,9 @@
 """Configs for training."""
 
-import inspect
-import pickle
-import time
-from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from typing import Any
 
-import numpy as np
-import torch
 
 
 @dataclass
@@ -87,6 +81,7 @@ class TrainingConfig:
 
 @dataclass
 class EvaluationConfig:
+    """An evaluation config."""
 
     seed: int = 42
 
@@ -98,5 +93,6 @@ class EvaluationConfig:
 
 @dataclass
 class CollectionConfig:
+    """Config for data collection."""
 
     seed: int = 42
