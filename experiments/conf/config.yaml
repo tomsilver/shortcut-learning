@@ -2,5 +2,9 @@ seed: 0
 
 defaults:
   - _self_
-  - approach: random
+  - approach: random  # Change to pure_rl to use PureRLApproach
   - system: obstacle2d
+  - collection: default
+  - training: default
+  - evaluation: default
+  - policy: default

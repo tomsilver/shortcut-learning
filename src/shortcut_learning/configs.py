@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any
 
 
-
 @dataclass
 class ApproachConfig:
     """Configuration for general approach."""
@@ -22,11 +21,13 @@ class PolicyConfig:
     policy_type: str = "rl_ppo"
 
     learning_rate: float = 1e-4
-    batch_size: int = 32
-    n_epochs: int = 5
+    batch_size: int = 16
+    n_epochs: int = 1
     gamma: float = 0.99
     ent_coef: float = 0.01
     device: str = "cuda"
+
+    total_timesteps: int = 10000
 
 
 @dataclass
@@ -36,7 +37,7 @@ class TrainingConfig:
     # General settings
     seed: int = 42
     num_episodes: int = 50
-    max_steps: int = 100
+    max_steps: int = 64
     max_training_steps_per_shortcut: int = 50
 
     # Collection settings
@@ -74,6 +75,8 @@ class TrainingConfig:
     # Action scaling
     action_scale: float = 1.0
 
+    skip_train: bool = False
+
     def get_training_data_path(self, system_name: str) -> Path:
         """Get path for training data for specific system."""
         return Path(self.training_data_dir) / system_name
@@ -87,7 +90,7 @@ class EvaluationConfig:
 
     render: bool = False
     select_random_goal: bool = False
-    max_steps: int = 100
+    max_steps: int = 64
     num_episodes: int = 100
 
 

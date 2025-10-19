@@ -3,13 +3,6 @@
 from typing import Any
 
 from shortcut_learning.configs import (
-<<<<<<< HEAD
-    ApproachConfig,
-    CollectionConfig,
-    EvaluationConfig,
-    PolicyConfig,
-=======
->>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
     TrainingConfig,
 )
 from shortcut_learning.methods.base_approach import (

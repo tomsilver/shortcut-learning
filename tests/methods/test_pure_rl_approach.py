@@ -47,9 +47,9 @@ def test_pure_rl_approach(system_cls, max_steps):
 
     print(approach)
 
-    train_data = collect_approach(system, approach, collect_config)
+    train_data = collect_approach(approach, collect_config)
 
-    trained_approach = train_approach(system, approach, train_config, train_data)
+    trained_approach = train_approach(approach, train_config, train_data)
     # trained_approach = approach
 
     metrics = evaluate_approach(system, trained_approach, eval_config)

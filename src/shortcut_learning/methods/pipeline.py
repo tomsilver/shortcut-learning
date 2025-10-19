@@ -44,19 +44,13 @@ class Metrics:
 def initialize_policy(
     policy_config: PolicyConfig, seed: int = 42
 ) -> Policy[ObsType, ActType]:
-<<<<<<< HEAD
-=======
     """Initialize the policy."""
->>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
     if policy_config.policy_type == "rl_ppo":
         return RLPolicy(seed, policy_config)
 
-<<<<<<< HEAD
-=======
     raise NotImplementedError
 
->>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
 def initialize_approach(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
@@ -72,16 +66,10 @@ def initialize_approach(
         policy: Policy[ObsType, ActType] = initialize_policy(policy_config)
         return PureRLApproach(system, seed, approach_config.approach_name, policy)
 
-<<<<<<< HEAD
-
-def collect_approach(
-    system: ImprovisationalTAMPSystem[ObsType, ActType],
-=======
     raise NotImplementedError
 
 
 def collect_approach(  # pylint: disable=useless-return
->>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
     approach: BaseApproach[ObsType, ActType],
     collect_config: CollectionConfig,
 ) -> TrainingData | None:
@@ -109,10 +97,7 @@ def evaluate_approach(
     approach: BaseApproach[ObsType, ActType],
     eval_config: EvaluationConfig,
 ) -> Metrics:
-<<<<<<< HEAD
-=======
     """Evaluate the approach."""
->>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
     # Run evaluation episodes
     print(f"\nEvaluating policy on {system.name}...")
@@ -154,13 +139,9 @@ def collect_train_evaluate_approach(
 
     start_time = time.time()
 
-<<<<<<< HEAD
-    train_data = collect_approach(system, approach, collect_config)
-=======
     train_data = collect_approach(  # pylint: disable=assignment-from-none
         approach, collect_config
     )
->>>>>>> 5ea7ae89167f8c1d86addab3512337e6d04bc515
 
     collect_time = time.time()
 
