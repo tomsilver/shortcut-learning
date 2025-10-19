@@ -2,9 +2,19 @@
 
 import pytest
 
-from shortcut_learning.configs import *
-from shortcut_learning.methods.pipeline import *
-from shortcut_learning.methods.random_approach import RandomApproach
+from shortcut_learning.configs import (
+    ApproachConfig,
+    CollectionConfig,
+    EvaluationConfig,
+    PolicyConfig,
+    TrainingConfig,
+)
+from shortcut_learning.methods.pipeline import (
+    collect_approach,
+    evaluate_approach,
+    initialize_approach,
+    train_approach,
+)
 from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
 
 
@@ -28,26 +38,28 @@ def run_episode(system, approach, max_steps):
 
 
 @pytest.mark.parametrize(
-    "system_cls,max_steps",
-    [(BaseObstacle2DTAMPSystem, 100)],
+    "system_cls",
+    [BaseObstacle2DTAMPSystem],
 )
-def test_pure_rl_approach(system_cls, max_steps):
+def test_pure_rl_approach(system_cls):
     """Test random approach on different environments."""
     system = system_cls.create_default(seed=42)
 
     approach_config = ApproachConfig(approach_type="pure_rl", approach_name="example")
 
-    policy_config = PolicyConfig()
+    policy_config = PolicyConfig(total_timesteps=1000)
 
     collect_config = CollectionConfig()
-    train_config = TrainingConfig(num_episodes=1)
+    train_config = TrainingConfig()
     eval_config = EvaluationConfig()
 
     approach = initialize_approach(system, approach_config, policy_config)
 
     print(approach)
 
-    train_data = collect_approach(approach, collect_config)
+    train_data = collect_approach(  # pylint: disable=assignment-from-none
+        approach, collect_config
+    )
 
     trained_approach = train_approach(approach, train_config, train_data)
     # trained_approach = approach
@@ -65,4 +77,4 @@ def test_pure_rl_approach(system_cls, max_steps):
 
 
 if __name__ == "__main__":
-    test_pure_rl_approach(BaseObstacle2DTAMPSystem, 100)
+    test_pure_rl_approach(BaseObstacle2DTAMPSystem)

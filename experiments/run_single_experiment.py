@@ -20,7 +20,7 @@ from shortcut_learning.methods.pipeline import (
     initialize_approach,
     train_approach,
 )
-from shortcut_learning.problems.base_tamp import BaseTAMPSystem
+from shortcut_learning.problems.base_tamp import ImprovisationalTAMPSystem, BaseTAMPSystem
 
 
 @hydra.main(version_base=None, config_name="config", config_path="conf/")
@@ -37,9 +37,9 @@ def _main(cfg: DictConfig) -> None:
     eval_config: EvaluationConfig = hydra.utils.instantiate(cfg.evaluation)
 
     # Create the system.
-    system = hydra.utils.instantiate(cfg.system).create_default(seed=cfg.seed)
+    system: ImprovisationalTAMPSystem = hydra.utils.instantiate(cfg.system).create_default(seed=cfg.seed)
     assert isinstance(system, BaseTAMPSystem)
-    approach = initialize_approach(system, approach_config, policy_config)
+    approach: BaseApproach = initialize_approach(system, approach_config, policy_config)
     assert isinstance(approach, BaseApproach)
 
     start_time = time.time()
