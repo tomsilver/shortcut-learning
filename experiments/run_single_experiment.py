@@ -15,10 +15,8 @@ from shortcut_learning.configs import (
 )
 from shortcut_learning.methods.base_approach import BaseApproach
 from shortcut_learning.methods.pipeline import (
-    collect_approach,
-    evaluate_approach,
     initialize_approach,
-    train_approach,
+    collect_train_evaluate_approach
 )
 from shortcut_learning.problems.base_tamp import (
     BaseTAMPSystem,
@@ -49,25 +47,13 @@ def _main(cfg: DictConfig) -> None:
     approach: BaseApproach = initialize_approach(system, approach_config, policy_config)
     assert isinstance(approach, BaseApproach)
 
-    start_time = time.time()
-
-    train_data = collect_approach(  # pylint: disable=assignment-from-none
-        approach, collect_config
+    metrics = collect_train_evaluate_approach(
+        system,
+        approach,
+        collect_config,
+        train_config,
+        eval_config
     )
-
-    collect_time = time.time()
-
-    trained_approach = train_approach(approach, train_config, train_data)
-
-    train_time = time.time()
-
-    metrics = evaluate_approach(system, trained_approach, eval_config)
-
-    eval_time = time.time()
-
-    metrics.collection_time = collect_time - start_time
-    metrics.training_time = train_time - collect_time
-    metrics.evaluation_time = eval_time - train_time
 
     logging.info(f"Metrics: {metrics}")
 

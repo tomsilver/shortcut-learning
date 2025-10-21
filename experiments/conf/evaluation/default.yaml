@@ -3,3 +3,4 @@ seed: 42
 render: false
 num_episodes: 100
 max_steps: 100
+select_random_goal: False

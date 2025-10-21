@@ -1,2 +1,11 @@
 _target_: shortcut_learning.configs.CollectionConfig
 seed: 42
+max_shortcuts_per_graph: 100
+use_random_rollouts: False
+num_rollouts_per_node: 50
+max_steps_per_rollout: 50
+shortcut_success_threshold: 1
+action_scale: 1.0
+collect_episodes: 10
+
+skip_collect: False

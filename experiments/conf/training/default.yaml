@@ -1,5 +1,32 @@
 _target_: shortcut_learning.configs.TrainingConfig
+
 seed: 42
-num_episodes: 50
-max_steps: 100
-skip_train: false
+runs_per_shortcut: 1
+
+max_env_steps: 64
+
+# Save/Load settings
+save_dir: "trained_policies"
+training_data_dir: "training_data"
+
+# Visualization settings
+render: False
+record_training: False
+training_record_interval: 50
+
+# Device settings
+device: "cuda"
+batch_size: 32
+
+# Context size for augmenting observations
+max_atom_size: 12
+
+# Goal-conditioned training settings
+success_threshold: 0.01
+success_reward: 10.0
+step_penalty: -0.5
+
+# Action scaling
+action_scale: 1.0
+
+skip_train: False

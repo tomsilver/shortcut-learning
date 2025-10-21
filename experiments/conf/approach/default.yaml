@@ -1,0 +1,12 @@
+_target_: shortcut_learning.configs.ApproachConfig
+approach_type: "random"
+approach_name: "example"
+
+seed: 42
+
+planner_id: "pyperplan"
+max_skill_steps: 200
+max_atom_size: 12
+use_context_wrapper: False
+
+debug_videos: False
