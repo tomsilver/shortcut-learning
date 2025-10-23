@@ -8,4 +8,8 @@ shortcut_success_threshold: 1
 action_scale: 1.0
 collect_episodes: 10
 
+# V2 collection parameters
+states_per_node: 10  # Number of diverse states to collect per node
+perturbation_steps: 5  # Random action steps for state diversity
+
 skip_collect: False

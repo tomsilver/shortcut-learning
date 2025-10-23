@@ -110,4 +110,8 @@ class CollectionConfig:
     action_scale: float = 1.0
     collect_episodes: int = 10
 
+    # V2 collection parameters
+    states_per_node: int = 10  # Number of diverse states to collect per node
+    perturbation_steps: int = 5  # Random steps to apply for state perturbation
+
     skip_collect: bool = False

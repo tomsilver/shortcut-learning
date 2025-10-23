@@ -202,8 +202,10 @@ class RLPolicy(Policy[ObsType, ActType]):
         callback: BaseCallback | None = None,
     ) -> None:
         """Train policy."""
+        from shortcut_learning.methods.training_data import ShortcutTrainingData
 
-        if train_data is not None:
+        # Configure environment if needed (V1 format)
+        if train_data is not None and not isinstance(train_data, ShortcutTrainingData):
             self._configure_env_recursively(env, train_data)
 
         # Initialize and train PPO
@@ -226,13 +228,17 @@ class RLPolicy(Policy[ObsType, ActType]):
                 check_freq=train_config.training_record_interval
             )
 
-        # Handle pure RL training without training data
+        # Determine number of training examples based on data format
         if train_data is None:
             print("\nTraining in pure RL mode with direct environment interaction")
-
             num_shortcuts = 1
+        elif isinstance(train_data, ShortcutTrainingData):
+            # V2 format: calculate total training examples
+            print("\nTraining with V2 training data (ShortcutTrainingData)")
+            num_shortcuts = train_data.num_training_examples()
         else:
-            print("\nTraining with provided training data")
+            # V1 format: use number of states
+            print("\nTraining with V1 training data (TrainingData)")
             num_shortcuts = len(train_data.states)
 
         # Calculate total timesteps to ensure we see each scenario multiple times

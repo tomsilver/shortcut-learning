@@ -13,6 +13,7 @@ class PlanningGraphNode:
 
     atoms: frozenset[GroundAtom]
     id: int
+    states: list = field(default_factory=list)  # Store multiple low-level states
 
     def __hash__(self) -> int:
         return hash(self.atoms)
@@ -32,10 +33,7 @@ class PlanningGraphEdge:
     operator: GroundOperator | None = None
     cost: float = float("inf")
     is_shortcut: bool = False
-
-    # Store path-dependent costs: (path, source_node_id) -> cost
-    # where path is a tuple of node IDs
-    costs: dict[tuple[tuple[int, ...], int], float] = field(default_factory=dict)
+    shortcut_id: int | None = None  # Index into multi-policy for this shortcut
 
     def __hash__(self) -> int:
         return hash((self.source, self.target, self.operator))
@@ -48,24 +46,6 @@ class PlanningGraphEdge:
             and self.target == other.target
             and self.operator == other.operator
         )
-
-    def get_cost(self, path: tuple[int, ...]) -> float:
-        """Get the cost of this edge when coming via the specified path."""
-        if not self.costs:
-            return self.cost
-
-        # Try to find exact path match
-        for (p, _), cost in self.costs.items():
-            if p == path:
-                return cost
-
-        # If no exact match, look for a path ending with the same node
-        for (p, node_id), cost in self.costs.items():
-            if p and p[-1] == self.source.id and node_id == self.source.id:
-                return cost
-
-        # Default to the minimum cost if no matching path is found
-        return self.cost
 
 
 class PlanningGraph:
@@ -113,8 +93,7 @@ class PlanningGraph:
     def find_shortest_path(
         self, init_atoms: set[GroundAtom], goal: set[GroundAtom]
     ) -> list[PlanningGraphEdge]:
-        """Find shortest path from initial node to goal node using path-aware
-        costs."""
+        """Find shortest path from initial node to goal node using standard Dijkstra."""
         if not self.nodes:
             return []
 
@@ -122,115 +101,64 @@ class PlanningGraph:
         goal_nodes = [node for node in self.nodes if goal.issubset(node.atoms)]
         assert goal_nodes, "No goal node found"
 
-        # Modified Dijkstra's algorithm that considers the path taken
-        distances: dict[tuple[PlanningGraphNode, tuple[int, ...]], float] = {}
-        previous: dict[
-            tuple[PlanningGraphNode, tuple[int, ...]],
-            tuple[tuple[PlanningGraphNode, tuple[int, ...]], PlanningGraphEdge] | None,
-        ] = {}
-
-        # Initialize with empty path for initial node
-        empty_path: tuple[int, ...] = tuple()
-        start_state = (initial_node, empty_path)
-        distances[start_state] = 0
-        previous[start_state] = None
+        # Standard Dijkstra's algorithm
+        distances: dict[PlanningGraphNode, float] = {initial_node: 0.0}
+        previous: dict[PlanningGraphNode, tuple[PlanningGraphNode, PlanningGraphEdge] | None] = {
+            initial_node: None
+        }
 
         # Priority queue for Dijkstra's algorithm
-        # (use a counter to break ties and avoid comparing non-comparable objects)
         counter = itertools.count()
-        queue: list[tuple[float, int, tuple[PlanningGraphNode, tuple[int, ...]]]] = [
-            (0, next(counter), start_state)
-        ]  # (distance, counter, (node, path))
+        queue: list[tuple[float, int, PlanningGraphNode]] = [
+            (0, next(counter), initial_node)
+        ]
 
-        # Track best cost to each node, regardless of path
-        best_node_costs: dict[PlanningGraphNode, float] = {initial_node: 0.0}
-
-        reached_goal_nodes = set()
-        max_path_length = len(self.nodes) * 2
         while queue:
-            # Get state with smallest distance
-            current_dist, _, current_state = heapq.heappop(queue)
-            current_node, current_path = current_state
-            if len(current_path) > max_path_length:
-                continue
-            if current_dist > best_node_costs.get(current_node, float("inf")):
+            current_dist, _, current_node = heapq.heappop(queue)
+
+            # Skip if we've already found a better path
+            if current_dist > distances.get(current_node, float("inf")):
                 continue
 
+            # Check if we reached a goal
             if current_node in goal_nodes:
-                reached_goal_nodes.add(current_node)
-                # If we reached all goal nodes, we can stop
-                if len(reached_goal_nodes) == len(goal_nodes) and all(
-                    best_node_costs.get(goal, float("inf")) <= current_dist
-                    for goal in goal_nodes
-                ):
-                    break
+                # We can stop since Dijkstra guarantees this is optimal
+                break
 
             # Check all outgoing edges
             for edge in [e for e in self.edges if e.source == current_node]:
-                edge_cost = edge.get_cost(current_path)
-                if edge_cost == float("inf"):
+                if edge.cost == float("inf"):
                     continue
 
-                new_dist = current_dist + edge_cost
-                new_path = current_path + (current_node.id,)
-                new_state = (edge.target, new_path)
+                new_dist = current_dist + edge.cost
 
-                if new_dist < best_node_costs.get(edge.target, float("inf")):
-                    best_node_costs[edge.target] = new_dist
+                # If we found a better path to the target, update
+                if new_dist < distances.get(edge.target, float("inf")):
+                    distances[edge.target] = new_dist
+                    previous[edge.target] = (current_node, edge)
+                    heapq.heappush(queue, (new_dist, next(counter), edge.target))
 
-                # If we found a better path, update
-                if new_state not in distances or new_dist < distances.get(
-                    new_state, float("inf")
-                ):
-                    distances[new_state] = float(new_dist)
-                    previous[new_state] = (current_state, edge)
-                    heapq.heappush(queue, (new_dist, next(counter), new_state))
-
-        # Find the best goal state from each goal node
-        best_goal_states = {}
-        for goal_node in goal_nodes:
-            goal_states = [(n, p) for (n, p) in distances if n == goal_node]
-            if not goal_states:
-                continue
-            best_goal_states[goal_node] = min(
-                goal_states, key=lambda s: distances.get(s, float("inf"))
-            )
-
-        assert best_goal_states, "No goal state found"
-        best_goal_state = min(
-            best_goal_states.values(),
-            key=lambda s: distances.get(s, float("inf")),
-        )
+        # Find the best goal node
+        reachable_goals = [g for g in goal_nodes if g in distances]
+        assert reachable_goals, "No goal node reachable"
+        best_goal = min(reachable_goals, key=lambda g: distances[g])
 
         # Reconstruct path
         path = []
-        current_state = best_goal_state
-        while current_state != start_state:
-            prev_entry = previous.get(current_state)
-            if prev_entry is None:
-                raise ValueError("No valid path found")
-            prev_state, edge = prev_entry
+        current_node = best_goal
+        while previous[current_node] is not None:
+            prev_node, edge = previous[current_node]
             path.append(edge)
-            current_state = prev_state
+            current_node = prev_node
         path.reverse()
 
-        # Print detailed path information
-        total_cost = distances[best_goal_state]
+        # Print path information
+        total_cost = distances[best_goal]
         print(f"Shortest path's cost: {total_cost}")
-        path_details = []
-        for edge in path:
-            if edge.costs:
-                cost_details = []
-                for (p, _), cost in edge.costs.items():
-                    path_str = "-".join(str(node_id) for node_id in p) if p else "start"
-                    cost_details.append(f"via {path_str}: {cost}")
-                path_details.append(
-                    f"{edge.source.id}->{edge.target.id} [{', '.join(cost_details)}]"
-                )
-            else:
-                path_details.append(
-                    f"{edge.source.id}->{edge.target.id} [cost: {edge.cost}]"
-                )
+        path_details = [
+            f"{edge.source.id}->{edge.target.id} [cost: {edge.cost}]"
+            for edge in path
+        ]
         print(f"Path details: {' -> '.join(path_details)}")
 
         return path

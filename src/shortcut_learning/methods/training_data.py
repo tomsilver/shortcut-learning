@@ -110,6 +110,30 @@ class ShortcutCandidate:
 
 
 @dataclass
+class ShortcutTrainingData:
+    """Container for shortcut training data (V2 structure).
+
+    This structure is cleaner: instead of storing parallel lists of states/atoms,
+    we store the k shortcut pairs. Each node in the pair has its own list of
+    states, so we can access all m states per node directly.
+    """
+
+    shortcuts: list[tuple[PlanningGraphNode, PlanningGraphNode]]  # k shortcut pairs
+    config: dict[str, Any]
+
+    def __len__(self) -> int:
+        """Return number of shortcuts."""
+        return len(self.shortcuts)
+
+    def num_training_examples(self) -> int:
+        """Return total number of training examples across all shortcuts."""
+        total = 0
+        for source_node, _target_node in self.shortcuts:
+            total += len(source_node.states)
+        return total
+
+
+@dataclass
 class TrainingData:
     """Container for policy training data."""
 

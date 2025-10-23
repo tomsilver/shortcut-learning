@@ -9,6 +9,7 @@ from task_then_motion_planning.structs import Perceiver
 
 from shortcut_learning.methods.training_data import (
     GoalConditionedTrainingData,
+    ShortcutTrainingData,
     TrainingData,
 )
 
@@ -642,3 +643,174 @@ class GoalConditionedWrapper(gym.Wrapper):
         assert self.perceiver is not None
         atoms = self.perceiver.step(obs)
         return self.create_atom_vector(atoms)
+
+
+class SLAPWrapperV2(gym.Env):
+    """Wrapper for training shortcut policies with V2 training data format.
+
+    V2 format: ShortcutTrainingData contains list of (source_node, target_node) pairs
+    where each node has .states (list of observations) and .atoms (frozenset).
+
+    This wrapper:
+    - Cycles through shortcuts
+    - For each shortcut, cycles through source states
+    - Provides goal-conditioned rewards based on target atoms
+    """
+
+    def __init__(
+        self,
+        base_env: gym.Env,
+        perceiver: Perceiver[ObsType],
+        max_episode_steps: int = 100,
+        *,
+        step_penalty: float = -0.1,
+        achievement_bonus: float = 1.0,
+        action_scale: float = 1.0,
+    ) -> None:
+        """Initialize wrapper with environment and perceiver."""
+        self.env = base_env
+        self.observation_space = base_env.observation_space
+        self.action_scale = action_scale
+        if isinstance(base_env.action_space, gym.spaces.Box):
+            self.action_space = gym.spaces.Box(
+                low=base_env.action_space.low * action_scale,
+                high=base_env.action_space.high * action_scale,
+                dtype=np.float32,
+            )
+        else:
+            print("Warning: Action space is not Box, using original action space.")
+            self.action_space = base_env.action_space
+        self.max_episode_steps = max_episode_steps
+        self.steps = 0
+        self.perceiver = perceiver
+
+        # Reward parameters
+        self.step_penalty = step_penalty
+        self.achievement_bonus = achievement_bonus
+
+        # V2 training data: shortcuts are (source_node, target_node) pairs
+        self.shortcuts: list[tuple[Any, Any]] = []  # List of (source_node, target_node)
+        self.current_shortcut_idx: int = 0
+        self.current_state_idx: int = 0
+
+        # Current episode tracking
+        self.current_source_atoms: set[GroundAtom] = set()
+        self.current_target_atoms: set[GroundAtom] = set()
+
+        # Relevant objects for the environment
+        self.relevant_objects = None
+        self.render_mode = base_env.render_mode
+
+    def configure_training(
+        self,
+        training_data: ShortcutTrainingData,
+    ) -> None:
+        """Configure environment for V2 training phase."""
+        print(f"Configuring V2 wrapper with {len(training_data)} shortcuts")
+
+        self.shortcuts = training_data.shortcuts
+        self.current_shortcut_idx = 0
+        self.current_state_idx = 0
+
+        # Count total training examples
+        total_examples = sum(len(source.states) for source, _ in self.shortcuts)
+        print(f"  Total training examples: {total_examples}")
+
+        # Print shortcuts
+        for idx, (source, target) in enumerate(self.shortcuts):
+            print(f"  Shortcut {idx}: node {source.id} -> {target.id} ({len(source.states)} states)")
+
+        self.max_episode_steps = training_data.config.get(
+            "max_training_steps_per_shortcut", self.max_episode_steps
+        )
+
+    def set_relevant_objects(self, objects):
+        """Set relevant objects for observation extraction."""
+        self.relevant_objects = objects
+
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[ObsType, dict[str, Any]]:
+        """Reset environment.
+
+        Cycles through shortcuts and their source states.
+        """
+        self.steps = 0
+
+        if not self.shortcuts:
+            # No training data configured, use default reset
+            return self.env.reset(seed=seed, options=options)
+
+        # Get current shortcut
+        shortcut_idx = self.current_shortcut_idx % len(self.shortcuts)
+        source_node, target_node = self.shortcuts[shortcut_idx]
+
+        # Get current source state
+        if not source_node.states:
+            raise ValueError(f"Source node {source_node.id} has no states!")
+
+        state_idx = self.current_state_idx % len(source_node.states)
+        current_state = source_node.states[state_idx]
+
+        # Set current source and target atoms
+        self.current_source_atoms = set(source_node.atoms)
+        self.current_target_atoms = set(target_node.atoms)
+
+        # Reset from the source state
+        if hasattr(self.env, "reset_from_state"):
+            obs, info = self.env.reset_from_state(current_state, seed=seed)
+        else:
+            raise AttributeError(
+                "The environment does not have a 'reset_from_state' method."
+            )
+
+        # Process observation if needed for the policy
+        if self.relevant_objects is not None:
+            assert hasattr(self.env, "extract_relevant_object_features")
+            obs = self.env.extract_relevant_object_features(
+                obs, self.relevant_objects
+            )
+
+        # Advance indices for next reset
+        self.current_state_idx += 1
+        if self.current_state_idx >= len(source_node.states):
+            # Finished all states for this shortcut, move to next shortcut
+            self.current_state_idx = 0
+            self.current_shortcut_idx += 1
+
+        return obs, info
+
+    def step(
+        self,
+        action: ActType,
+    ) -> tuple[ObsType, float, bool, bool, dict[str, Any]]:
+        """Step environment."""
+        obs, _, _, truncated, info = self.env.step(action)
+        self.steps += 1
+        current_atoms = self.perceiver.step(obs)
+
+        # Process observation if needed
+        if self.relevant_objects is not None:
+            assert hasattr(self.env, "extract_relevant_object_features")
+            obs = self.env.extract_relevant_object_features(obs, self.relevant_objects)
+
+        # Check achievement of target atoms
+        achieved = self.current_target_atoms == current_atoms
+
+        # Calculate reward
+        reward = self.step_penalty
+        if achieved:
+            reward += self.achievement_bonus
+
+        # Termination conditions
+        terminated = achieved
+        truncated = truncated or self.steps >= self.max_episode_steps
+
+        return obs, reward, terminated, truncated, info
+
+    def render(self) -> Any:
+        """Render the environment."""
+        return self.env.render()
