@@ -17,7 +17,7 @@ from shortcut_learning.methods.training_data import TrainingData
 class RandomApproach(BaseApproach[ObsType, ActType]):
     """An approach that takes random actions."""
 
-    def reset(self, obs: ObsType, info: dict[str, Any]) -> ApproachStepResult[ActType]:
+    def reset(self, obs: ObsType, info: dict[str, Any], select_random_goal: bool=False) -> ApproachStepResult[ActType]:
         """Reset approach."""
         return ApproachStepResult(action=self.system.env.action_space.sample())
 

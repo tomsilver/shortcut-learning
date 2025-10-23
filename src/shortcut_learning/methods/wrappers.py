@@ -1,0 +1,644 @@
+"""Context-aware environment wrapper for improvisational TAMP."""
+
+from typing import Any, TypeVar, cast
+
+import gymnasium as gym
+import numpy as np
+from relational_structs import GroundAtom
+from task_then_motion_planning.structs import Perceiver
+
+from shortcut_learning.methods.training_data import (
+    GoalConditionedTrainingData,
+    TrainingData,
+)
+
+ObsType = TypeVar("ObsType")
+ActType = TypeVar("ActType")
+
+
+class PureRLWrapper(gym.Wrapper):
+    """Wrapper for training pure RL baselines without TAMP structure."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        perceiver: Perceiver[ObsType],
+        goal_atoms: set[GroundAtom],
+        *,
+        max_episode_steps: int = 100,
+        step_penalty: float = -0.1,
+        achievement_bonus: float = 1.0,
+        action_scale: float = 1.0,
+    ) -> None:
+        """Initialize wrapper for pure RL training."""
+        super().__init__(env)
+        self.perceiver = perceiver
+        self.goal_atoms = goal_atoms
+        self.max_episode_steps = max_episode_steps
+        self.step_penalty = step_penalty
+        self.achievement_bonus = achievement_bonus
+        self.action_scale = action_scale
+        self.steps = 0
+        if isinstance(env.action_space, gym.spaces.Box):
+            self.action_space = gym.spaces.Box(
+                low=env.action_space.low * action_scale,
+                high=env.action_space.high * action_scale,
+                dtype=np.float32,
+            )
+        else:
+            print("Warning: Action space is not Box, using original action space.")
+            self.action_space = env.action_space
+        self._render_mode = getattr(env, "render_mode", None)
+
+    def reset(self, **kwargs) -> tuple[Any, dict[str, Any]]:
+        """Reset the environment."""
+        self.steps = 0
+        obs, info = self.env.reset(**kwargs)
+        return obs, info
+
+    def step(self, action: Any) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+        """Take a step in the environment."""
+        obs, _, _, truncated, info = self.env.step(action)
+        self.steps += 1
+
+        current_atoms = self.perceiver.step(obs)
+        achieved = self.goal_atoms.issubset(current_atoms)
+
+        reward = self.step_penalty
+        if achieved:
+            reward += self.achievement_bonus
+
+        terminated = achieved
+        truncated = truncated or self.steps >= self.max_episode_steps
+
+        return obs, reward, terminated, truncated, info
+
+
+class SLAPWrapper(gym.Env):
+    """General wrapper for training improvisational policies.
+
+    Handles goal atoms achievement during training.
+    """
+
+    def __init__(
+        self,
+        base_env: gym.Env,
+        perceiver: Perceiver[ObsType],
+        max_episode_steps: int = 100,
+        *,
+        step_penalty: float = -0.1,
+        achievement_bonus: float = 1.0,
+        action_scale: float = 1.0,
+    ) -> None:
+        """Initialize wrapper with environment and perceiver."""
+        self.env = base_env
+        self.observation_space = base_env.observation_space
+        self.action_scale = action_scale
+        if isinstance(base_env.action_space, gym.spaces.Box):
+            self.action_space = gym.spaces.Box(
+                low=base_env.action_space.low * action_scale,
+                high=base_env.action_space.high * action_scale,
+                dtype=np.float32,
+            )
+        else:
+            print("Warning: Action space is not Box, using original action space.")
+            self.action_space = base_env.action_space
+        self.max_episode_steps = max_episode_steps
+        self.steps = 0
+        self.perceiver = perceiver
+
+        # Reward parameters
+        self.step_penalty = step_penalty
+        self.achievement_bonus = achievement_bonus
+
+        # Training state tracking
+        self.training_states: list[ObsType] = []
+        self.current_atoms_list: list[set[GroundAtom]] = []
+        self.goal_atoms_list: list[set[GroundAtom]] = []
+        self.current_atom_set: set[GroundAtom] = set()
+        self.goal_atom_set: set[GroundAtom] = set()
+        self.current_training_idx: int = 0
+
+        # Relevant objects for the environment
+        self.relevant_objects = None
+        self.render_mode = base_env.render_mode
+
+    def configure_training(
+        self,
+        training_data: TrainingData,
+    ) -> None:
+        """Configure environment for training phase."""
+        print(f"Configuring environment with {len(training_data)} training scenarios")
+        self.training_states = training_data.states
+
+        self.current_atoms_list = training_data.current_atoms
+        self.goal_atoms_list = training_data.goal_atoms
+        self.current_atom_set = (
+            self.current_atoms_list[0] if self.current_atoms_list else set()
+        )
+        self.goal_atom_set = self.goal_atoms_list[0] if self.goal_atoms_list else set()
+
+        self.current_training_idx = 0
+        self.max_episode_steps = training_data.config.get(
+            "max_training_steps_per_shortcut", self.max_episode_steps
+        )
+
+    def set_relevant_objects(self, objects):
+        """Set relevant objects for observation extraction."""
+        self.relevant_objects = objects
+
+    def reset(
+        self,
+        *,
+        seed: int | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> tuple[ObsType, dict[str, Any]]:
+        """Reset environment.
+
+        If training states are configured, cycles through them.
+        Otherwise uses default environment reset.
+        """
+        self.steps = 0
+
+        if self.training_states:
+            # Get current training scenario and store current/goal atoms
+            self.current_training_idx = self.current_training_idx % len(
+                self.training_states
+            )
+            current_state = self.training_states[self.current_training_idx]
+
+            # Set up current training data
+            self.current_atom_set = self.current_atoms_list[self.current_training_idx]
+            self.goal_atom_set = self.goal_atoms_list[self.current_training_idx]
+
+            # Reset with current state
+            if hasattr(self.env, "reset_from_state"):
+                obs, info = self.env.reset_from_state(current_state, seed=seed)
+            else:
+                raise AttributeError(
+                    "The environment does not have a 'reset_from_state' method."
+                )
+
+            # Process observation if needed for the policy
+            if self.relevant_objects is not None:
+                # type: ignore[unreachable]   # pylint: disable=line-too-long
+                assert hasattr(self.env, "extract_relevant_object_features")
+                obs = self.env.extract_relevant_object_features(
+                    obs, self.relevant_objects
+                )
+
+            self.current_training_idx += 1
+            return obs, info
+
+        return self.env.reset(seed=seed, options=options)
+
+    def step(
+        self,
+        action: ActType,
+    ) -> tuple[ObsType, float, bool, bool, dict[str, Any]]:
+        """Step environment."""
+        obs, _, _, truncated, info = self.env.step(action)
+        self.steps += 1
+        current_atoms = self.perceiver.step(obs)
+
+        # Process observation if needed
+        if self.relevant_objects is not None:
+            # type: ignore[unreachable]   # pylint: disable=line-too-long
+            assert hasattr(self.env, "extract_relevant_object_features")
+            obs = self.env.extract_relevant_object_features(obs, self.relevant_objects)
+
+        # Check achievement of goal atoms
+        achieved = self.goal_atom_set == current_atoms
+
+        # Calculate reward
+        reward = self.step_penalty
+        if achieved:
+            reward += self.achievement_bonus
+
+        # Termination conditions
+        terminated = achieved
+        truncated = truncated or self.steps >= self.max_episode_steps
+
+        return obs, reward, terminated, truncated, info
+
+    def render(self) -> Any:
+        """Render the environment."""
+        return self.env.render()
+
+
+class ContextAwareWrapper(gym.Wrapper):
+    """Wrapper that augments observations with context information."""
+
+    def __init__(
+        self,
+        env: gym.Env,
+        perceiver: Perceiver[ObsType],
+        max_atom_size: int = 12,
+    ) -> None:
+        super().__init__(env)
+        self.perceiver: Perceiver[ObsType] = perceiver
+        self.goal_atoms: set[GroundAtom] = set()
+        self.current_atoms: set[GroundAtom] = set()
+
+        self.num_context_features = max_atom_size
+        # Add context features to observation space
+        if isinstance(env.observation_space, gym.spaces.Box):
+            self.observation_space = gym.spaces.Box(
+                low=np.append(
+                    env.observation_space.low, np.zeros(self.num_context_features)
+                ),
+                high=np.append(
+                    env.observation_space.high, np.ones(self.num_context_features)
+                ),
+                dtype=np.float32,
+            )
+            print(
+                f"Initialized context wrapper with {self.num_context_features} features"
+            )
+
+        # Dictionary mapping atom strings to unique indices
+        self._atom_to_index: dict[str, int] = {}
+        self._next_index = 0
+
+    def reset(self, **kwargs: Any) -> tuple[ObsType, dict[str, Any]]:
+        """Reset environment and augment observation."""
+        obs, info = self.env.reset(**kwargs)
+        self.current_atoms = self.perceiver.step(obs)
+        if hasattr(self.env, "goal_atoms"):
+            self.goal_atoms = self.env.goal_atoms
+        return self.augment_observation(obs), info
+
+    def step(
+        self, action: ActType
+    ) -> tuple[ObsType, float, bool, bool, dict[str, Any]]:
+        """Take a step and augment observation."""
+        obs, reward, terminated, truncated, info = self.env.step(action)
+        self.current_atoms = self.perceiver.step(obs)
+        if hasattr(self.env, "goal_atoms"):
+            self.goal_atoms = self.env.goal_atoms
+        return (
+            self.augment_observation(obs),
+            float(reward),
+            terminated,
+            truncated,
+            info,
+        )
+
+    def augment_observation(self, obs: ObsType) -> ObsType:
+        """Augment observation with multi-hot vector for atoms."""
+        context = np.zeros(self.num_context_features, dtype=np.float32)
+        if not self.goal_atoms:
+            return cast(ObsType, np.concatenate([obs, context]))
+        for atom in self.goal_atoms:
+            idx = self._get_atom_index(str(atom))
+            context[idx] = 1.0
+        return cast(ObsType, np.concatenate([obs, context]))
+
+    def set_context(
+        self, current_atoms: set[GroundAtom], goal_atoms: set[GroundAtom]
+    ) -> None:
+        """Set current context for augmentation."""
+        self.current_atoms = current_atoms
+        self.goal_atoms = goal_atoms
+        assert (
+            len(goal_atoms) <= self.num_context_features
+        ), "Number of atoms is larger than context size"
+        for atom in current_atoms.union(goal_atoms):
+            self._get_atom_index(str(atom))
+
+    def configure_training(self, train_data: TrainingData) -> None:
+        """Configure environment for training with data."""
+        if hasattr(self.env, "configure_training"):
+            self.env.configure_training(train_data)
+
+        # Load existing atom-to-index mapping if available
+        if "atom_to_index" in train_data.config and train_data.config["atom_to_index"]:
+            self._atom_to_index = train_data.config["atom_to_index"]
+            self._next_index = (
+                max(self._atom_to_index.values()) + 1 if self._atom_to_index else 0
+            )
+            print(f"Loaded {len(self._atom_to_index)} atoms with fixed indices")
+        else:
+            # Collect all unique atoms from training data
+            unique_atoms = set()
+            for atoms_set in train_data.current_atoms:
+                for atom in atoms_set:
+                    unique_atoms.add(str(atom))
+            for goal_atoms in train_data.goal_atoms:
+                for atom in goal_atoms:
+                    unique_atoms.add(str(atom))
+
+            for atom_str in unique_atoms:
+                self._get_atom_index(atom_str)
+
+            print(f"New atom-to-index mapping with {len(self._atom_to_index)} entries")
+
+        for atom_str, idx in self._atom_to_index.items():
+            print(f"Atom {atom_str} -> index {idx}")
+
+    def _get_atom_index(self, atom_str: str) -> int:
+        """Get a unique index for this atom."""
+        if atom_str in self._atom_to_index:
+            return self._atom_to_index[atom_str]
+        assert (
+            self._next_index < self.num_context_features
+        ), "No more space for new atoms. Increase max_atom_size"
+        idx = self._next_index
+        self._atom_to_index[atom_str] = idx
+        self._next_index += 1
+        return idx
+
+    def get_atom_index_mapping(self) -> dict[str, int]:
+        """Get the current atom to index mapping."""
+        return self._atom_to_index.copy()
+
+
+class GoalConditionedWrapper(gym.Wrapper):
+    """Wrapper that converts an environment to a goal-conditioned format.
+
+    This wrapper:
+    1. Augments observations with goal states from the planning graph
+    2. Ensures goal node IDs are higher than source node IDs
+    3. Provides appropriate rewards for goal achievement
+    """
+
+    def __init__(
+        self,
+        env: gym.Env,
+        node_states: dict[int, list[ObsType]],
+        valid_shortcuts: list[tuple[int, int]],
+        perceiver: Perceiver | None = None,
+        node_atoms: dict[int, set[GroundAtom]] | None = None,
+        max_atom_size: int = 12,
+        use_atom_as_obs: bool = True,
+        success_threshold: float = 0.01,
+        success_reward: float = 10.0,
+        step_penalty: float = -0.5,
+        max_episode_steps: int = 50,
+    ):
+        """Initialize wrapper with node states."""
+        super().__init__(env)
+        self.node_states = node_states
+        self.valid_shortcuts = valid_shortcuts or []
+        self.perceiver = perceiver
+        self.node_atoms = node_atoms or {}
+        self.use_atom_as_obs = use_atom_as_obs
+        self.max_atom_size = max_atom_size
+        self.success_threshold = success_threshold
+        self.success_reward = success_reward
+        self.step_penalty = step_penalty
+        self.max_episode_steps = max_episode_steps
+        self.steps = 0
+
+        if self.use_atom_as_obs and self.node_atoms is not None:
+            assert (
+                self.perceiver is not None
+            ), "Perceiver must be provided when using atoms as observations"
+            self.atom_to_index: dict[str, int] = {}
+            self._next_index = 0
+
+            # Create multi-hot vectors for all node atoms
+            self.atom_vectors: dict[int, np.ndarray] = {}
+            for node_id, atoms in self.node_atoms.items():
+                self.atom_vectors[node_id] = self.create_atom_vector(atoms)
+
+            # Observation space with atom vectors
+            self.observation_space = gym.spaces.Dict(
+                {
+                    "observation": env.observation_space,
+                    "achieved_goal": gym.spaces.Box(
+                        0, 1, shape=(max_atom_size,), dtype=np.float32
+                    ),
+                    "desired_goal": gym.spaces.Box(
+                        0, 1, shape=(max_atom_size,), dtype=np.float32
+                    ),
+                }
+            )
+        else:
+            # Original observation space with raw state goals
+            self.observation_space = gym.spaces.Dict(
+                {
+                    "observation": env.observation_space,
+                    "achieved_goal": env.observation_space,
+                    "desired_goal": env.observation_space,
+                }
+            )
+
+        # Current episode information
+        self.current_node_id: int | None = None
+        self.goal_node_id: int | None = None
+        self.goal_state: ObsType | None = None
+        self.goal_atom_vector: np.ndarray | None = None
+        self.node_ids = sorted(list(node_states.keys()))
+
+    def configure_training(self, train_data: GoalConditionedTrainingData) -> None:
+        """Configure environment for training (for compatibility)."""
+        assert hasattr(train_data, "node_states") and train_data.node_states is not None
+        assert (
+            hasattr(train_data, "valid_shortcuts")
+            and train_data.valid_shortcuts is not None
+        )
+        self.node_states = train_data.node_states
+        self.valid_shortcuts = train_data.valid_shortcuts
+        self.node_atoms = train_data.node_atoms or {}
+        print(
+            f"Updated {len(self.node_states)} node states, {len(self.valid_shortcuts)} valid shortcuts, and {len(self.node_atoms)}  node atoms from training data"  # pylint: disable=line-too-long
+        )
+        self.max_episode_steps = train_data.config.get(
+            "max_steps", self.max_episode_steps
+        )
+
+    def reset(
+        self, *, seed: int | None = None, options: dict[str, Any] | None = None
+    ) -> tuple[dict[str, ObsType], dict[str, Any]]:
+        """Reset environment and sample a goal."""
+        self.steps = 0
+        options = options or {}
+        self.current_node_id = options.get("source_node_id")
+        self.goal_node_id = options.get("goal_node_id")
+
+        self._sample_valid_nodes()
+        assert self.current_node_id in self.node_states, "Invalid source node ID"
+        available_states = self.node_states[self.current_node_id]
+        random_idx = np.random.randint(0, len(available_states))
+        current_state = available_states[random_idx]
+
+        # Reset with current state
+        if hasattr(self.env, "reset_from_state"):
+            obs, info = self.env.reset_from_state(current_state, seed=seed)
+        else:
+            raise AttributeError(
+                "The environment does not have a 'reset_from_state' method."
+            )
+        assert self.current_node_id is not None and self.goal_node_id is not None
+        self.goal_state = self.node_states[self.goal_node_id][0]
+
+        info.update(
+            {
+                "source_node_id": self.current_node_id,
+                "goal_node_id": self.goal_node_id,
+            }
+        )
+
+        if self.use_atom_as_obs:
+            self.goal_atom_vector = self.atom_vectors[self.goal_node_id]
+            current_atom_vector = self._get_current_atom_vector(obs)
+            dict_obs = {
+                "observation": obs,
+                "achieved_goal": current_atom_vector,
+                "desired_goal": self.goal_atom_vector,
+            }
+        else:
+            dict_obs = {
+                "observation": obs,
+                "achieved_goal": obs,
+                "desired_goal": self.goal_state,
+            }
+
+        return dict_obs, info
+
+    def step(
+        self, action: ActType
+    ) -> tuple[dict[str, ObsType], float, bool, bool, dict[str, Any]]:
+        """Step environment and compute goal-conditioned rewards."""
+        next_obs, _, terminated, truncated, info = self.env.step(action)
+        self.steps += 1
+
+        if self.use_atom_as_obs and self.goal_atom_vector is not None:
+            current_atom_vector = self._get_current_atom_vector(next_obs)
+            goal_indices = np.where(self.goal_atom_vector > 0.5)[0]
+            goal_achieved = np.all(current_atom_vector[goal_indices] > 0.5)
+            atoms_distance = np.sum(current_atom_vector[goal_indices] < 0.5)
+            info.update(
+                {
+                    "atoms_distance": atoms_distance,
+                    "is_success": goal_achieved,
+                    "source_node_id": self.current_node_id,
+                    "goal_node_id": self.goal_node_id,
+                }
+            )
+            dict_obs = {
+                "observation": next_obs,
+                "achieved_goal": current_atom_vector,
+                "desired_goal": self.goal_atom_vector,
+            }
+        else:
+            goal_distance = np.linalg.norm(next_obs - self.goal_state)
+            goal_achieved = goal_distance < self.success_threshold
+            info.update(
+                {
+                    "goal_distance": goal_distance,
+                    "is_success": goal_achieved,
+                    "source_node_id": self.current_node_id,
+                    "goal_node_id": self.goal_node_id,
+                }
+            )
+            dict_obs = {
+                "observation": next_obs,
+                "achieved_goal": next_obs,
+                "desired_goal": self.goal_state,
+            }
+
+        goal_reward = self.success_reward if goal_achieved else self.step_penalty
+        goal_terminated = bool(goal_achieved)
+        truncated = truncated or (self.steps >= self.max_episode_steps)
+        return dict_obs, goal_reward, goal_terminated or terminated, truncated, info
+
+    def compute_reward(
+        self,
+        achieved_goal: ObsType,
+        desired_goal: ObsType,
+        info: list[dict[str, Any]] | dict[str, Any],
+        _indices: list[int] | None = None,
+    ) -> np.ndarray:
+        """Compute the reward for achieving a given goal."""
+        if self.use_atom_as_obs:
+            assert hasattr(achieved_goal, "shape")
+            assert hasattr(
+                desired_goal, "__getitem__"
+            ), "desired_goal must be indexable"
+            assert hasattr(
+                achieved_goal, "__getitem__"
+            ), "achieved_goal must be indexable"
+            rewards = np.zeros(achieved_goal.shape[0])
+            success = np.zeros(achieved_goal.shape[0], dtype=np.bool_)
+
+            for i in range(achieved_goal.shape[0]):
+                goal_indices = np.where(desired_goal[i] > 0.5)[0]
+                goal_satisfied = np.all(achieved_goal[i][goal_indices] > 0.5)
+                rewards[i] = (
+                    self.success_reward if goal_satisfied else self.step_penalty
+                )
+                success[i] = goal_satisfied
+
+            if isinstance(info, list):
+                for i, info_dict in enumerate(info):
+                    if i < len(success):
+                        info_dict["is_success"] = bool(success[i])
+            elif isinstance(info, dict):
+                if len(success) > 0:
+                    info["is_success"] = bool(success[0])
+        else:
+            distance = np.linalg.norm(
+                np.array(achieved_goal) - np.array(desired_goal), axis=-1
+            )
+            rewards = np.where(
+                distance < self.success_threshold,
+                self.success_reward,
+                self.step_penalty,
+            )
+            if isinstance(info, list):
+                for i, info_dict in enumerate(info):
+                    if i < len(distance):
+                        info_dict["is_success"] = bool(
+                            distance[i] < self.success_threshold
+                        )
+            elif isinstance(info, dict):
+                if isinstance(distance, np.ndarray) and len(distance) > 0:
+                    info["is_success"] = bool(distance[0] < self.success_threshold)
+                else:
+                    info["is_success"] = bool(distance < self.success_threshold)
+        return rewards
+
+    def _sample_valid_nodes(self) -> None:
+        """Sample valid source and goal nodes."""
+        assert self.node_ids
+        if self.current_node_id is None:
+            source_nodes = set(source_id for source_id, _ in self.valid_shortcuts)
+            self.current_node_id = np.random.choice(list(source_nodes))
+        if self.goal_node_id is None and self.current_node_id is not None:
+            valid_targets = [
+                target_id
+                for source_id, target_id in self.valid_shortcuts
+                if source_id == self.current_node_id
+            ]
+            assert (
+                valid_targets
+            ), "No valid target nodes found for the current source node"
+            self.goal_node_id = np.random.choice(valid_targets)
+
+    def _get_atom_index(self, atom_str: str) -> int:
+        """Get a unique index for this atom."""
+        if atom_str in self.atom_to_index:
+            return self.atom_to_index[atom_str]
+        assert (
+            self._next_index < self.max_atom_size
+        ), "No more space for new atoms. Increase max_atom_size."
+        idx = self._next_index
+        self.atom_to_index[atom_str] = idx
+        self._next_index += 1
+        return idx
+
+    def create_atom_vector(self, atoms: set[GroundAtom]) -> np.ndarray:
+        """Create a multi-hot vector representation of the set of atoms."""
+        vector = np.zeros(self.max_atom_size, dtype=np.float32)
+        for atom in atoms:
+            idx = self._get_atom_index(str(atom))
+            vector[idx] = 1.0
+        return vector
+
+    def _get_current_atom_vector(self, obs: np.ndarray) -> np.ndarray:
+        """Get the multi-hot vector for the current atoms."""
+        assert self.perceiver is not None
+        atoms = self.perceiver.step(obs)
+        return self.create_atom_vector(atoms)

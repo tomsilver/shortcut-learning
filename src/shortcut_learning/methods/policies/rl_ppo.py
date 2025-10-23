@@ -9,9 +9,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from torch import Tensor
 
-from shortcut_learning.configs import (
-    PolicyConfig,
-)
+from shortcut_learning.configs import PolicyConfig, TrainingConfig
 from shortcut_learning.methods.policies.base import (
     ActType,
     ObsType,
@@ -163,20 +161,20 @@ class RLPolicy(Policy[ObsType, ActType]):
 
     def initialize(self, env: gym.Env) -> None:
         """Initialize policy with environment."""
-        if self.model is None:
-            self.model = PPO(
-                "MlpPolicy",
-                env,
-                learning_rate=self.config.learning_rate,
-                n_steps=100,  # Default value, will be updated in train()
-                batch_size=self.config.batch_size,
-                n_epochs=self.config.n_epochs,
-                gamma=self.config.gamma,
-                ent_coef=self.config.ent_coef,
-                device=self.device_ctx.device,
-                seed=self._seed,
-                verbose=1,
-            )
+        self.model = PPO(
+            "MlpPolicy",
+            env,
+            learning_rate=self.config.learning_rate,
+            # Default value, will be updated in train()
+            n_steps=self.config.steps_per_episode,
+            batch_size=self.config.batch_size,
+            n_epochs=self.config.n_epochs,
+            gamma=self.config.gamma,
+            ent_coef=self.config.ent_coef,
+            device=self.device_ctx.device,
+            seed=self._seed,
+            verbose=1,
+        )
 
     def can_initiate(self):
         """Check whether the policy can be executed given the current
@@ -186,50 +184,34 @@ class RLPolicy(Policy[ObsType, ActType]):
         # specific shortcut configuration is similar to what it was trained on
         return self.model is not None
 
+    def _configure_env_recursively(
+        self, env: gym.Env, training_data: TrainingData
+    ) -> None:
+        """Recursively unwrap environment to configure the trainable
+        wrapper."""
+        if hasattr(env, "configure_training"):
+            env.configure_training(training_data)
+        if hasattr(env, "env"):
+            self._configure_env_recursively(env.env, training_data)
+
     def train(
         self,
         env: gym.Env,
+        train_config: TrainingConfig,
         train_data: TrainingData | None,
         callback: BaseCallback | None = None,
     ) -> None:
         """Train policy."""
 
-        # Handle pure RL training without training data
-        if train_data is None:
-            print("\nTraining in pure RL mode with direct environment interaction")
-            if hasattr(env, "max_episode_steps"):
-                max_steps = env.max_episode_steps
-            elif hasattr(env, "env") and hasattr(env.env, "max_episode_steps"):
-                max_steps = env.env.max_episode_steps
-            else:
-                raise ValueError(
-                    "Environment does not have max_episode_steps attribute"
-                )
-            self.model = PPO(
-                "MlpPolicy",
-                env,
-                learning_rate=self.config.learning_rate,
-                n_steps=max_steps,
-                batch_size=self.config.batch_size,
-                n_epochs=self.config.n_epochs,
-                gamma=self.config.gamma,
-                ent_coef=self.config.ent_coef,
-                device=self.device_ctx.device,
-                seed=self._seed,
-                verbose=1,
-            )
-            if callback is None:
-                callback = TrainingProgressCallback()
-            total_timesteps = self.config.total_timesteps  # Adjust as needed
-            self.model.learn(total_timesteps=total_timesteps, callback=callback)
-            return
+        if train_data is not None:
+            self._configure_env_recursively(env, train_data)
 
         # Initialize and train PPO
         self.model = PPO(
             "MlpPolicy",
             env,
             learning_rate=self.config.learning_rate,
-            n_steps=train_data.config.get("max_training_steps_per_shortcut", 100),
+            n_steps=self.config.steps_per_episode,
             batch_size=self.config.batch_size,
             n_epochs=self.config.n_epochs,
             gamma=self.config.gamma,
@@ -241,18 +223,27 @@ class RLPolicy(Policy[ObsType, ActType]):
 
         if callback is None:
             callback = TrainingProgressCallback(
-                check_freq=train_data.config.get("training_record_interval", 100)
+                check_freq=train_config.training_record_interval
             )
 
+        # Handle pure RL training without training data
+        if train_data is None:
+            print("\nTraining in pure RL mode with direct environment interaction")
+
+            num_shortcuts = 1
+        else:
+            print("\nTraining with provided training data")
+            num_shortcuts = len(train_data.states)
+
         # Calculate total timesteps to ensure we see each scenario multiple times
-        episodes_per_scenario = train_data.config.get("episodes_per_scenario", 2)
-        max_steps = train_data.config.get("max_training_steps_per_shortcut", 100)
-        total_timesteps = len(train_data.states) * episodes_per_scenario * max_steps
+        runs_per_shortcut = train_config.runs_per_shortcut
+        steps_per_run = train_config.max_env_steps
+        total_timesteps = num_shortcuts * runs_per_shortcut * steps_per_run
 
         print("Training Settings:")
-        print(f"Max steps per episode: {max_steps}")
-        print(f"Episodes per scenario: {episodes_per_scenario}")
-        print(f"Total scenarios: {len(train_data.states)}")
+        print(f"Max steps per run: {steps_per_run}")
+        print(f"Runs per shortcut: {runs_per_shortcut}")
+        print(f"Total shortcuts: {num_shortcuts}")
         print(f"Total training timesteps: {total_timesteps}")
 
         # Train the model

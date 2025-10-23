@@ -18,10 +18,13 @@ from shortcut_learning.configs import (
     TrainingConfig,
 )
 from shortcut_learning.methods.base_approach import BaseApproach
+from shortcut_learning.methods.collection import collect_graph_based_training_data
 from shortcut_learning.methods.policies.base import Policy
+from shortcut_learning.methods.policies.multi_rl_ppo import MultiRLPolicy
 from shortcut_learning.methods.policies.rl_ppo import RLPolicy
 from shortcut_learning.methods.pure_rl_approach import PureRLApproach
 from shortcut_learning.methods.random_approach import RandomApproach
+from shortcut_learning.methods.slap_approach import SLAPApproach
 from shortcut_learning.methods.training_data import TrainingData
 from shortcut_learning.problems.base_tamp import ImprovisationalTAMPSystem
 
@@ -49,6 +52,9 @@ def initialize_policy(
     if policy_config.policy_type == "rl_ppo":
         return RLPolicy(seed, policy_config)
 
+    if policy_config.policy_type == "multi_rl_ppo":
+        return MultiRLPolicy(seed, policy_config)
+
     raise NotImplementedError
 
 
@@ -56,16 +62,15 @@ def initialize_approach(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
     approach_config: ApproachConfig,
     policy_config: PolicyConfig,
-    seed: int = 42,
 ) -> BaseApproach[ObsType, ActType]:
     """Initialize an approach."""
+    policy: Policy[ObsType, ActType] = initialize_policy(policy_config)
     if approach_config.approach_type == "random":
-        return RandomApproach(system, seed, approach_config.approach_name)
-
+        return RandomApproach(system, approach_config)
     if approach_config.approach_type == "pure_rl":
-        policy: Policy[ObsType, ActType] = initialize_policy(policy_config)
-        return PureRLApproach(system, seed, approach_config.approach_name, policy)
-
+        return PureRLApproach(system, approach_config, policy)
+    if approach_config.approach_type == "slap":
+        return SLAPApproach(system, approach_config, policy)
     raise NotImplementedError
 
 
@@ -75,9 +80,14 @@ def collect_approach(  # pylint: disable=useless-return
 ) -> TrainingData | None:
     """Collect data for an approach."""
     # Coming soon:
+    if collect_config.skip_collect:
+        return None
+
+    train_data, _ = collect_graph_based_training_data(
+        approach.system, approach, collect_config
+    )
     # return collect_training_data(collect_config, ...)
-    del approach, collect_config
-    return None
+    return train_data
 
 
 def train_approach(
@@ -189,7 +199,10 @@ def run_evaluation_episode(
         hasattr(approach, "reset")
         and "select_random_goal" in inspect.signature(approach.reset).parameters
     ):
-        step_result = approach.reset(obs, info, select_random_goal=eval_config.select_random_goal)  # type: ignore[call-arg]  # pylint: disable=line-too-long
+        # type: ignore[call-arg]  # pylint: disable=line-too-long
+        step_result = approach.reset(
+            obs, info, select_random_goal=eval_config.select_random_goal
+        )
     else:
         step_result = approach.reset(obs, info)
 

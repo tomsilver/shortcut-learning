@@ -10,8 +10,103 @@ from typing import Any, Generic, TypeVar
 
 from relational_structs import GroundAtom
 
+from shortcut_learning.methods.graph_utils import (
+    PlanningGraphNode,
+)
+
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
+
+
+@dataclass
+class ShortcutSignature:
+    """Domain-agnostic signature of a shortcut for matching purposes."""
+
+    source_predicates: set[str]
+    target_predicates: set[str]
+    source_types: set[str]
+    target_types: set[str]
+
+    @classmethod
+    def from_context(
+        cls, source_atoms: set[GroundAtom], target_atoms: set[GroundAtom]
+    ) -> ShortcutSignature:
+        """Create signature from context."""
+        source_preds = {atom.predicate.name for atom in source_atoms}
+        target_preds = {atom.predicate.name for atom in target_atoms}
+
+        source_types = set()
+        for atom in source_atoms:
+            for obj in atom.objects:
+                source_types.add(obj.type.name)
+
+        target_types = set()
+        for atom in target_atoms:
+            for obj in atom.objects:
+                target_types.add(obj.type.name)
+
+        return cls(source_preds, target_preds, source_types, target_types)
+
+    def similarity(self, other: ShortcutSignature) -> float:
+        """Calculate similarity score between signatures."""
+        # Predicate similarity (Jaccard)
+        source_pred_sim = len(self.source_predicates & other.source_predicates) / max(
+            len(self.source_predicates | other.source_predicates), 1
+        )
+        target_pred_sim = len(self.target_predicates & other.target_predicates) / max(
+            len(self.target_predicates | other.target_predicates), 1
+        )
+
+        # Object type similarity (Jaccard)
+        source_type_sim = len(self.source_types & other.source_types) / max(
+            len(self.source_types | other.source_types), 1
+        )
+        target_type_sim = len(self.target_types & other.target_types) / max(
+            len(self.target_types | other.target_types), 1
+        )
+
+        # Overall similarity - weighted average
+        return (
+            0.3 * source_pred_sim
+            + 0.3 * target_pred_sim
+            + 0.2 * source_type_sim
+            + 0.2 * target_type_sim
+        )
+
+    def __eq__(self, other: object) -> bool:
+        """Check equality with another ShortcutSignature."""
+        if not isinstance(other, ShortcutSignature):
+            return False
+
+        return (
+            self.source_predicates == other.source_predicates
+            and self.target_predicates == other.target_predicates
+            and self.source_types == other.source_types
+            and self.target_types == other.target_types
+        )
+
+    def __hash__(self) -> int:
+        """Hash function for ShortcutSignature."""
+        # Convert sets to frozensets for hashing
+        return hash(
+            (
+                frozenset(self.source_predicates),
+                frozenset(self.target_predicates),
+                frozenset(self.source_types),
+                frozenset(self.target_types),
+            )
+        )
+
+
+@dataclass
+class ShortcutCandidate:
+    """Represents a potential shortcut in the planning graph."""
+
+    source_node: PlanningGraphNode
+    target_node: PlanningGraphNode
+    source_atoms: set[GroundAtom]
+    target_atoms: set[GroundAtom]
+    source_state: Any
 
 
 @dataclass

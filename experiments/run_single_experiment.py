@@ -1,7 +1,6 @@
 """Run a single experiment."""
 
 import logging
-import time
 
 import hydra
 from omegaconf import DictConfig
@@ -15,8 +14,8 @@ from shortcut_learning.configs import (
 )
 from shortcut_learning.methods.base_approach import BaseApproach
 from shortcut_learning.methods.pipeline import (
+    collect_train_evaluate_approach,
     initialize_approach,
-    collect_train_evaluate_approach
 )
 from shortcut_learning.problems.base_tamp import (
     BaseTAMPSystem,
@@ -48,11 +47,7 @@ def _main(cfg: DictConfig) -> None:
     assert isinstance(approach, BaseApproach)
 
     metrics = collect_train_evaluate_approach(
-        system,
-        approach,
-        collect_config,
-        train_config,
-        eval_config
+        system, approach, collect_config, train_config, eval_config
     )
 
     logging.info(f"Metrics: {metrics}")

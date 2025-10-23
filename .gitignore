@@ -166,3 +166,5 @@ core*
 
 #outputs folder
 experiments/outputs/
+tests/methods/videos/
+experiments/videos/

@@ -13,6 +13,15 @@ class ApproachConfig:
 
     approach_name: str
 
+    seed: int = 42
+
+    planner_id: str = "pyperplan"
+    max_skill_steps: int = 200
+    max_atom_size: int = 12
+    use_context_wrapper: bool = False
+
+    debug_videos: bool = False
+
 
 @dataclass
 class PolicyConfig:
@@ -22,12 +31,11 @@ class PolicyConfig:
 
     learning_rate: float = 1e-4
     batch_size: int = 16
+    steps_per_episode: int = 64
     n_epochs: int = 1
     gamma: float = 0.99
     ent_coef: float = 0.01
     device: str = "cuda"
-
-    total_timesteps: int = 10000
 
 
 @dataclass
@@ -36,14 +44,9 @@ class TrainingConfig:
 
     # General settings
     seed: int = 42
-    num_episodes: int = 50
-    max_steps: int = 64
-    max_training_steps_per_shortcut: int = 50
+    runs_per_shortcut: int = 1
 
-    # Collection settings
-    collect_episodes: int = 100
-    episodes_per_scenario: int = 1
-    force_collect: bool = False
+    max_env_steps: int = 64
 
     # Save/Load settings
     save_dir: str = "trained_policies"
@@ -99,3 +102,12 @@ class CollectionConfig:
     """Config for data collection."""
 
     seed: int = 42
+    max_shortcuts_per_graph: int = 100
+    use_random_rollouts: bool = False
+    num_rollouts_per_node: int = 50
+    max_steps_per_rollout: int = 50
+    shortcut_success_threshold: int = 1
+    action_scale: float = 1.0
+    collect_episodes: int = 10
+
+    skip_collect: bool = False

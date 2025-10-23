@@ -9,6 +9,7 @@ from typing import Any, Generic, TypeVar
 import gymnasium as gym
 from relational_structs import GroundAtom
 
+from shortcut_learning.configs import TrainingConfig
 from shortcut_learning.methods.training_data import TrainingData
 
 ObsType = TypeVar("ObsType")
@@ -54,15 +55,22 @@ class Policy(Generic[ObsType, ActType], ABC):
     def configure_context(self, context: PolicyContext[ObsType, ActType]) -> None:
         """Configure policy with context information."""
 
-    def train(self, env: gym.Env, train_data: TrainingData | None) -> None:
+    def train(
+        self,
+        env: gym.Env,
+        train_config: TrainingConfig,
+        train_data: TrainingData | None,
+    ) -> None:
         """Train the policy if needed.
 
         Default implementation just initializes the policy and updates
         context. Policies that need training should override this.
         """
-        self.initialize(env)
+        del train_config
+
         if hasattr(env, "configure_training"):
             env.configure_training(train_data)
+        self.initialize(env)
 
     @abstractmethod
     def save(self, path: str) -> None:

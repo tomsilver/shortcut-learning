@@ -4,9 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Generic, TypeVar
 
-from shortcut_learning.configs import (
-    TrainingConfig,
-)
+from shortcut_learning.configs import ApproachConfig, TrainingConfig
 from shortcut_learning.methods.training_data import TrainingData
 from shortcut_learning.problems.base_tamp import BaseTAMPSystem
 
@@ -27,7 +25,7 @@ class BaseApproach(Generic[ObsType, ActType], ABC):
     """Base class for all approaches."""
 
     def __init__(
-        self, system: BaseTAMPSystem[ObsType, ActType], seed: int, name: str
+        self, system: BaseTAMPSystem[ObsType, ActType], config: ApproachConfig
     ) -> None:
         """Initialize approach.
 
@@ -36,9 +34,9 @@ class BaseApproach(Generic[ObsType, ActType], ABC):
             seed: Random seed
         """
         self.system = system
-        self._seed = seed
+        self._seed = config.seed
         self._training_mode = False
-        self.name = name
+        self.name = config.approach_name
 
     @property
     def training_mode(self) -> bool:
@@ -51,7 +49,7 @@ class BaseApproach(Generic[ObsType, ActType], ABC):
         self._training_mode = value
 
     @abstractmethod
-    def reset(self, obs: ObsType, info: dict[str, Any]) -> ApproachStepResult[ActType]:
+    def reset(self, obs: ObsType, info: dict[str, Any], select_random_goal: bool=False) -> ApproachStepResult[ActType]:
         """Reset approach with initial observation."""
 
     @abstractmethod
