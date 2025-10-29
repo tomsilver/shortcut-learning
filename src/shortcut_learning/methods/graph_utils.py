@@ -14,6 +14,7 @@ class PlanningGraphNode:
     atoms: frozenset[GroundAtom]
     id: int
     states: list = field(default_factory=list)  # Store multiple low-level states
+    state_incoming_edges: list[int | None] = field(default_factory=list)  # Which edge led to each state
 
     def __hash__(self) -> int:
         return hash(self.atoms)
@@ -26,14 +27,21 @@ class PlanningGraphNode:
 
 @dataclass
 class PlanningGraphEdge:
-    """Edge in the planning graph representing a transition."""
+    """Edge in the planning graph representing a transition.
+
+    Supports path-dependent costs: the cost of an edge may depend on how we arrived
+    at the source node. This is stored in path_costs where keys are tuples of
+    predecessor edge IDs (with lookback window) and values are costs.
+    """
 
     source: PlanningGraphNode
     target: PlanningGraphNode
     operator: GroundOperator | None = None
-    cost: float = float("inf")
+    cost: float = float("inf")  # Default/average cost
     is_shortcut: bool = False
     shortcut_id: int | None = None  # Index into multi-policy for this shortcut
+    path_costs: dict[tuple[int, ...], float] = field(default_factory=dict)  # Path-dependent costs
+    edge_id: int | None = None  # Unique ID for this edge (for path tracking)
 
     def __hash__(self) -> int:
         return hash((self.source, self.target, self.operator))
@@ -85,6 +93,8 @@ class PlanningGraph:
     ) -> PlanningGraphEdge:
         """Add an edge to the graph."""
         edge = PlanningGraphEdge(source, target, operator, cost, is_shortcut)
+        # Assign unique edge ID
+        edge.edge_id = len(self.edges)
         self.edges.append(edge)
         self.node_to_incoming_edges[edge.target].append(edge)
         self.node_to_outgoing_edges[edge.source].append(edge)
@@ -130,7 +140,22 @@ class PlanningGraph:
                 if edge.cost == float("inf"):
                     continue
 
-                new_dist = current_dist + edge.cost
+                # Use path-dependent cost if available
+                # Look up how we arrived at current_node
+                prev_info = previous.get(current_node)
+                if prev_info is not None:
+                    prev_edge = prev_info[1]
+                    prev_edge_id = prev_edge.edge_id
+                    # Check if we have a path-dependent cost for this context
+                    path_key = (prev_edge_id,) if prev_edge_id is not None else None
+                    if path_key and path_key in edge.path_costs:
+                        edge_cost = edge.path_costs[path_key]
+                    else:
+                        edge_cost = edge.cost  # Fall back to average
+                else:
+                    edge_cost = edge.cost  # No previous edge (initial node)
+
+                new_dist = current_dist + edge_cost
 
                 # If we found a better path to the target, update
                 if new_dist < distances.get(edge.target, float("inf")):
@@ -142,6 +167,8 @@ class PlanningGraph:
         reachable_goals = [g for g in goal_nodes if g in distances]
         assert reachable_goals, "No goal node reachable"
         best_goal = min(reachable_goals, key=lambda g: distances[g])
+
+        print(f"Dijkstra selected goal: node {best_goal.id} with {len(best_goal.atoms)} atoms (out of {len(goal_nodes)} possible goal nodes)")
 
         # Reconstruct path
         path = []
@@ -156,7 +183,7 @@ class PlanningGraph:
         total_cost = distances[best_goal]
         print(f"Shortest path's cost: {total_cost}")
         path_details = [
-            f"{edge.source.id}->{edge.target.id} [cost: {edge.cost}]"
+            f"{edge.source.id}->{edge.target.id} [{'SHORTCUT' if edge.is_shortcut else 'regular'}, cost: {edge.cost}]"
             for edge in path
         ]
         print(f"Path details: {' -> '.join(path_details)}")

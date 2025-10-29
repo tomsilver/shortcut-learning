@@ -72,11 +72,12 @@ class TrainingProgressCallback(BaseCallback):
                 recent_rewards = self.episode_rewards[-self.check_freq :]
                 success_rate = sum(recent_successes) / len(recent_successes)
 
-                print("\nTraining Progress:")
-                print(f"Episodes: {n_episodes}")
-                print(f"Recent Success%: {success_rate:.2%}")
-                print(f"Recent Avg Episode Length: {np.mean(recent_lengths):.2f}")
-                print(f"Recent Avg Reward: {np.mean(recent_rewards):.2f}")
+                policy_info = f" [{self.policy_key}]" if self.policy_key else ""
+                print(f"\nTraining Progress{policy_info}:")
+                print(f"  Episodes: {n_episodes}")
+                print(f"  Recent Success%: {success_rate:.2%}")
+                print(f"  Recent Avg Episode Length: {np.mean(recent_lengths):.2f}")
+                print(f"  Recent Avg Reward: {np.mean(recent_rewards):.2f}")
 
                 if self.early_stopping:
                     self.success_rates.append(success_rate)

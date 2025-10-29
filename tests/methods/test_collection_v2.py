@@ -11,9 +11,12 @@ from shortcut_learning.methods.collection_v2 import (
 from shortcut_learning.methods.policies.multi_rl_ppo_v2 import MultiRLPolicyV2
 from shortcut_learning.methods.slap_approach_v2 import SLAPApproachV2
 from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
+from shortcut_learning.problems.obstacle2d_hard.system import (
+    BaseObstacle2DTAMPSystem as BaseObstacle2DHardTAMPSystem,
+)
 
 
-@pytest.mark.parametrize("system_cls", [BaseObstacle2DTAMPSystem])
+@pytest.mark.parametrize("system_cls", [BaseObstacle2DTAMPSystem, BaseObstacle2DHardTAMPSystem])
 def test_collect_diverse_states_per_node(system_cls):
     """Test that we can collect multiple states per node."""
     # Setup
@@ -186,9 +189,11 @@ def test_collect_training_data_v2_full_pipeline(system_cls):
         (10, 1, True),    # Multi-start with same params
         (50, 2, False),   # Single-start at target scale
         (50, 2, True),    # Multi-start at target scale
+        (100, 5, False),  # Single-start with 100 episodes
+        (100, 5, True),   # Multi-start BFS with 100 episodes (matches experiment)
     ],
 )
-@pytest.mark.parametrize("system_cls", [BaseObstacle2DTAMPSystem])
+@pytest.mark.parametrize("system_cls", [BaseObstacle2DTAMPSystem, BaseObstacle2DHardTAMPSystem])
 def test_states_per_node_ablation(system_cls, states_per_node, perturbation_steps, use_multi_start):
     """Ablation study: Test how many states we can actually collect per node.
 

@@ -59,19 +59,22 @@ def _collect_diverse_states_multi_start(
     states_per_node: int = 10,
     perturbation_steps: int = 5,
 ) -> None:
-    """Collect states using multi-start strategy: each node serves as a starting point.
+    """Collect states using simple BFS exploration from reset.
 
-    Strategy:
-    - For each node N in the graph:
-      1. Reset environment and navigate to node N
-      2. Try to reach all other nodes from N
-      3. Collect states at each reachable node
+    Strategy (for num_episodes episodes):
+      1. Reset environment to a random initial state
+      2. BFS: explore all EDGES reachable from initial state (not just nodes)
+      3. Save states reached via each edge (one node can get multiple states per episode)
+      4. Track which edge was used to reach each state
 
-    This ensures even coverage: every node is used as a source equally often,
-    avoiding the bias where deep nodes are hard to reach from node 0.
+    This is simple, natural, and gets diverse incoming edges automatically.
+    With ~100 episodes, nodes get many states from all their incoming edges.
+
+    Note: states_per_node parameter is repurposed as number of collection episodes.
     """
-    print(f"\n=== Collecting states per node (MULTI-START) ===")
-    print(f"Target: {states_per_node} states/node")
+    print(f"\n=== Collecting states via BFS edge exploration ===")
+    num_episodes = states_per_node
+    print(f"Running {num_episodes} collection episodes")
 
     system = approach.system
     planning_graph = approach.planning_graph
@@ -80,73 +83,117 @@ def _collect_diverse_states_multi_start(
     if not planning_graph.nodes:
         return
 
-    # For each node, use it as a starting point
-    for start_node in planning_graph.nodes:
-        print(f"\n--- Using node {start_node.id} as starting point ---")
+    # Run collection episodes
+    for episode in range(num_episodes):
+        if (episode + 1) % 10 == 0:
+            print(f"  Episode {episode + 1}/{num_episodes}")
 
-        # Find paths from initial node (0) to this start_node
-        initial_node = planning_graph.nodes[0]
-        path_to_start = _find_regular_path(planning_graph, initial_node, start_node)
+        # Reset to random initial state
+        obs, info = system.reset()
 
-        if path_to_start is None and start_node != initial_node:
-            print(f"  No path to reach start node {start_node.id}, skipping")
+        # Get initial atoms to find starting node
+        atoms = system.perceiver.step(obs)
+
+        # Find which node this initial state corresponds to
+        start_node = None
+        for node in planning_graph.nodes:
+            if set(node.atoms) == atoms:
+                start_node = node
+                break
+
+        if start_node is None:
+            # Initial state not in graph - skip this episode
             continue
 
-        # Now try to reach all other nodes from start_node
-        for target_node in planning_graph.nodes:
-            # Skip if we already have enough states for this target
-            if len(target_node.states) >= states_per_node:
-                continue
+        # BFS exploration: traverse all reachable EDGES (not just nodes)
+        # Track: (node, state, incoming_edge_id) tuples to save after BFS
+        states_to_save = []
 
-            # Find path from start_node to target_node
-            if target_node == start_node:
-                # Collecting state at the start node itself
-                path_to_target = []
+        # Queue: (current_node, current_obs, incoming_edge_id)
+        from collections import deque
+        queue = deque([(start_node, obs, None)])  # Start has no incoming edge
+        visited_edges = set()  # Track (source_id, target_id, edge_id) tuples
+
+        while queue:
+            current_node, current_obs, incoming_edge = queue.popleft()
+
+            # Save this state (add after BFS to avoid modifying during iteration)
+            states_to_save.append((current_node, current_obs, incoming_edge))
+
+            # Explore all outgoing edges from current node
+            for edge in planning_graph.edges:
+                if edge.source != current_node:
+                    continue
+
+                # Skip shortcuts during collection
+                if edge.is_shortcut:
+                    continue
+
+                # Create edge signature
+                edge_sig = (edge.source.id, edge.target.id, edge.edge_id)
+
+                # Skip if this edge already traversed
+                if edge_sig in visited_edges:
+                    continue
+
+                visited_edges.add(edge_sig)
+
+                # Try to execute this edge
+                env = system.env
+                env.reset_from_state(current_obs)
+
+                # Get skill and execute
+                skill = approach._get_skill(edge.operator)
+                skill.reset(edge.operator)
+
+                next_obs = current_obs
+                succeeded = False
+
+                for step in range(approach._max_skill_steps):
+                    action = skill.get_action(next_obs)
+                    if action is None:
+                        break
+
+                    next_obs, _, term, trunc, _ = env.step(action)
+                    next_atoms = system.perceiver.step(next_obs)
+
+                    # Check if reached target
+                    if set(next_atoms) == set(edge.target.atoms):
+                        succeeded = True
+                        break
+
+                    if term or trunc:
+                        break
+
+                if succeeded:
+                    # Add to queue for further exploration
+                    queue.append((edge.target, next_obs, edge.edge_id))
+
+        # Now save all collected states (avoiding duplicates)
+        episode_collected = 0
+        episode_duplicates = 0
+        for node, state, incoming_edge_id in states_to_save:
+            if not _is_duplicate_state(state, node.states):
+                node.states.append(state)
+                node.state_incoming_edges.append(incoming_edge_id)
+                episode_collected += 1
             else:
-                path_to_target = _find_regular_path(planning_graph, start_node, target_node)
-                if not path_to_target:
-                    continue  # Can't reach this target from this start
+                episode_duplicates += 1
 
-            # Try to collect states for this target node
-            attempts_needed = states_per_node - len(target_node.states)
-            max_attempts = attempts_needed * 3
-
-            for attempt in range(max_attempts):
-                if len(target_node.states) >= states_per_node:
-                    break
-
-                # Reset environment
-                obs, info = system.reset()
-
-                # Navigate to start_node
-                if path_to_start:
-                    obs, success = _execute_path(approach, obs, path_to_start, 0)
-                    if not success:
-                        continue
-
-                # Navigate from start_node to target_node
-                if path_to_target:
-                    final_obs, success = _execute_path(
-                        approach, obs, path_to_target,
-                        perturbation_steps if attempt > 0 else 0
-                    )
-                    if not success:
-                        continue
-                else:
-                    # Already at target (target == start)
-                    final_obs = obs
-
-                # Verify we're at the right node
-                atoms = system.perceiver.step(final_obs)
-                if set(target_node.atoms) == atoms:
-                    if not _is_duplicate_state(final_obs, target_node.states):
-                        target_node.states.append(final_obs)
+        # Debug: show episodes that collected states, or first 10 episodes
+        if episode_collected > 0 or episode < 10:
+            print(f"    Episode {episode}: started at node {start_node.id}, saved {episode_collected} states, rejected {episode_duplicates} duplicates")
 
     # Print summary
     total_states = sum(len(node.states) for node in planning_graph.nodes)
     print(f"\nTotal states collected: {total_states} across {len(planning_graph.nodes)} nodes")
     for node in planning_graph.nodes:
-        print(f"  Node {node.id}: {len(node.states)} states")
+        # Count unique incoming edges
+        unique_edges = set(node.state_incoming_edges)
+        edge_counts = {edge_id: node.state_incoming_edges.count(edge_id) for edge_id in unique_edges}
+        edge_info = ", ".join(f"edge_{k}: {v}" if k is not None else f"initial: {v}"
+                              for k, v in sorted(edge_counts.items(), key=lambda x: (x[0] is None, x[0])))
+        print(f"  Node {node.id}: {len(node.states)} states ({len(unique_edges)} incoming edges: {edge_info})")
 
 
 def _collect_diverse_states_single_start(
@@ -189,6 +236,8 @@ def _collect_diverse_states_single_start(
         # Check for duplicates and add state
         if not _is_duplicate_state(obs, initial_node.states):
             initial_node.states.append(obs)
+            # Initial node has no incoming edge (it's the starting state)
+            initial_node.state_incoming_edges.append(None)
 
     print(f"  Collected {len(initial_node.states)} states for node {initial_node.id}")
 
@@ -229,6 +278,9 @@ def _collect_diverse_states_single_start(
                     # Check if this state is different from existing ones
                     if not _is_duplicate_state(final_obs, target_node.states):
                         target_node.states.append(final_obs)
+                        # Track incoming edge (last edge in path)
+                        incoming_edge_id = path[-1].edge_id if path else None
+                        target_node.state_incoming_edges.append(incoming_edge_id)
                         states_collected += 1
 
         print(f"  Collected {len(target_node.states)} states for node {target_node.id}")

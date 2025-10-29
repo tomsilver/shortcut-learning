@@ -797,7 +797,7 @@ class SLAPWrapperV2(gym.Env):
             assert hasattr(self.env, "extract_relevant_object_features")
             obs = self.env.extract_relevant_object_features(obs, self.relevant_objects)
 
-        # Check achievement of target atoms
+        # Check achievement of target atoms (exact match required)
         achieved = self.current_target_atoms == current_atoms
 
         # Calculate reward

@@ -106,7 +106,7 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
         queue = deque([(initial_node, 0)])  # Queue for BFS: [(node, depth)]
         node_count = 0
         max_nodes = 1300
-        print(f"Building planning graph with max {max_nodes} nodes...")
+        print(f"Building SUBGRAPH with max {max_nodes} nodes (node IDs will change after merge)...")
 
         # Breadth-first search to build the graph
         while queue and node_count < max_nodes:
@@ -263,13 +263,17 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
             atoms_frozen = frozenset(node.atoms)
             if atoms_frozen in main_graph.node_map:
                 # Node already exists
-                node_mapping[node] = main_graph.node_map[atoms_frozen]
+                existing_node = main_graph.node_map[atoms_frozen]
+                node_mapping[node] = existing_node
+                if node.id != existing_node.id:
+                    print(f"    [MERGE] Subgraph node {node.id} ({len(node.atoms)} atoms) → main graph node {existing_node.id}")
             else:
                 # Add new node
                 new_node = main_graph.add_node(node.atoms)
                 new_node.states = node.states.copy()  # Preserve any collected states
                 node_mapping[node] = new_node
                 nodes_added += 1
+                print(f"    [MERGE] Subgraph node {node.id} ({len(node.atoms)} atoms) → NEW main graph node {new_node.id}")
 
         # Add new edges
         for edge in subgraph.edges:
@@ -413,10 +417,22 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
             self._compute_edge_costs_simple()
             self.costs_computed = True
 
-        # Find shortest path
-        print(f"Finding path from {atoms_frozen} to {goal_atoms_frozen}")
-        print(f"  Initial node in graph: {atoms_frozen in self.planning_graph.node_map}")
-        print(f"  Goal node in graph: {goal_atoms_frozen in self.planning_graph.node_map}")
+        # Find shortest path (using main graph node IDs)
+        initial_node = self.planning_graph.node_map.get(atoms_frozen)
+        goal_node = self.planning_graph.node_map.get(goal_atoms_frozen)
+
+        if initial_node:
+            print(f"Initial state: node {initial_node.id} with {len(initial_node.atoms)} atoms")
+        if goal_node:
+            print(f"Goal state: exact match found at node {goal_node.id} with {len(goal_node.atoms)} atoms")
+        else:
+            # No exact match, but Dijkstra will find any node containing goal as subset
+            goal_nodes_subset = [n for n in self.planning_graph.nodes if goal_atoms.issubset(n.atoms)]
+            if goal_nodes_subset:
+                print(f"Goal state: no exact match in graph (looking for {len(goal_atoms_frozen)} atoms)")
+                print(f"  Will accept any of {len(goal_nodes_subset)} nodes containing goal as subset")
+            else:
+                print(f"Goal state: NOT IN GRAPH (has {len(goal_atoms_frozen)} atoms, no nodes contain these atoms)")
 
         try:
             self._current_path = self.planning_graph.find_shortest_path(atoms, goal_atoms)
@@ -504,37 +520,82 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
                 print(f"      Warning: No state found for node {edge.source.id}, using default cost")
                 return 1.0
 
-        # Use the first available state
-        initial_state = source_states[0]
+        # Group measurements by incoming edge for path-dependent costs
+        # Use 2x max_skill_steps as the penalty for failures
+        failure_penalty = 2 * self._max_skill_steps
+        measurements_by_prev_edge = {}  # prev_edge_id -> list of costs
+        all_measurements = []
+        num_failures = 0
 
-        # Reset environment to the source state
-        env.reset_from_state(initial_state)
+        for sample_idx in range(len(source_states)):
+            initial_state = source_states[sample_idx]
 
-        # Get the skill for this operator
-        assert edge.operator is not None, "Regular edge must have an operator"
-        skill = self._get_skill(edge.operator)
-        skill.reset(edge.operator)
+            # Get which edge led to this state
+            prev_edge_id = edge.source.state_incoming_edges[sample_idx] if sample_idx < len(edge.source.state_incoming_edges) else None
 
-        # Execute skill and measure steps
-        obs = initial_state
-        target_atoms = set(edge.target.atoms)
+            # Reset environment to the source state
+            env.reset_from_state(initial_state)
 
-        for step in range(self._max_skill_steps):
-            action = skill.get_action(obs)
-            if action is None:
-                return float('inf')
+            # Get the skill for this operator
+            assert edge.operator is not None, "Regular edge must have an operator"
+            skill = self._get_skill(edge.operator)
+            skill.reset(edge.operator)
 
-            obs, _, term, trunc, _ = env.step(action)
-            atoms = self.system.perceiver.step(obs)
+            # Execute skill and measure steps
+            obs = initial_state
+            target_atoms = set(edge.target.atoms)
+            succeeded = False
 
-            # Check if reached target node
-            if set(atoms) == target_atoms:
-                return float(step + 1)
+            for step in range(self._max_skill_steps):
+                action = skill.get_action(obs)
+                if action is None:
+                    break  # Skill failed for this sample, try next
 
-            if term or trunc:
-                return float('inf')
+                obs, _, term, trunc, _ = env.step(action)
+                atoms = self.system.perceiver.step(obs)
 
-        return float('inf')  # Timeout
+                # Check if reached target node
+                if set(atoms) == target_atoms:
+                    cost = float(step + 1)
+                    all_measurements.append(cost)
+                    succeeded = True
+
+                    # Group by incoming edge
+                    if prev_edge_id not in measurements_by_prev_edge:
+                        measurements_by_prev_edge[prev_edge_id] = []
+                    measurements_by_prev_edge[prev_edge_id].append(cost)
+                    break
+
+                if term or trunc:
+                    break
+
+            # If failed, count it as failure_penalty
+            if not succeeded:
+                num_failures += 1
+                all_measurements.append(failure_penalty)
+                if prev_edge_id not in measurements_by_prev_edge:
+                    measurements_by_prev_edge[prev_edge_id] = []
+                measurements_by_prev_edge[prev_edge_id].append(failure_penalty)
+
+        # Store path-dependent costs
+        for prev_edge_id, costs in measurements_by_prev_edge.items():
+            if prev_edge_id is not None:
+                edge.path_costs[(prev_edge_id,)] = sum(costs) / len(costs)
+
+        # Return average of all measurements including failures
+        if all_measurements:
+            avg_cost = sum(all_measurements) / len(all_measurements)
+            num_successes = len(all_measurements) - num_failures
+            if len(all_measurements) > 1:
+                individual_costs = ", ".join(f"{c:.1f}" for c in all_measurements)
+                print(f"      Averaged {len(all_measurements)} measurements: [{individual_costs}] → {avg_cost:.1f}")
+                if num_failures > 0:
+                    success_rate = num_successes / len(all_measurements)
+                    print(f"      Success rate: {num_successes}/{len(all_measurements)} = {success_rate:.1%}")
+                if len(measurements_by_prev_edge) > 1:
+                    print(f"      Path-dependent costs: {len(measurements_by_prev_edge)} different incoming edges")
+            return avg_cost
+        return float('inf')
 
     def _try_add_shortcuts_to_new_nodes(self) -> None:
         """Try to add trained shortcuts to newly added nodes in the graph.
@@ -628,13 +689,21 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
                 is_shortcut=True,
             )
             edge.shortcut_id = shortcut_id
-            print(f"  Added shortcut {shortcut_id}: {source_node.id} → {target_node.id}")
+            print(f"  Added shortcut {shortcut_id}: node {source_node.id} → node {target_node.id}")
 
         self.shortcuts_added = True
 
         # Compute costs for shortcuts
         print(f"\nComputing costs for {k} shortcuts...")
         self._compute_shortcut_costs(training_data)
+
+        # Print summary of shortcuts for reference
+        print(f"\n=== SHORTCUT SUMMARY (Main Graph Node IDs) ===")
+        for shortcut_id, (source, target) in enumerate(training_data.shortcuts):
+            edge = next((e for e in self.planning_graph.edges if e.is_shortcut and e.shortcut_id == shortcut_id), None)
+            if edge:
+                cost_str = f"{edge.cost:.1f} steps" if edge.cost < float('inf') else "FAILED"
+                print(f"  Shortcut {shortcut_id}: node {source.id} → node {target.id} [{cost_str}]")
 
         print("\n" + "="*60)
         print("TRAINING COMPLETE")
@@ -671,14 +740,14 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
             print("Warning: Policy does not have a train() method")
 
     def _compute_shortcut_costs(
-        self, training_data: ShortcutTrainingData, num_samples: int = 5
+        self, training_data: ShortcutTrainingData
     ) -> None:
-        """Compute costs for shortcuts by sampling from training states.
+        """Compute costs for shortcuts by averaging over all training states.
 
-        For each shortcut, sample num_samples states from source_node.states,
+        For each shortcut, use all states from source_node.states,
         execute the policy, measure steps, and average.
         """
-        print("Computing shortcut costs by sampling...")
+        print("Computing shortcut costs from all available states...")
 
         raw_env = self._create_planning_env()
 
@@ -694,35 +763,37 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
                 print(f"  Warning: Could not find edge for shortcut {shortcut_id}")
                 continue
 
-            # Sample states and measure cost
+            # Use all available states to measure cost
             source_states = source_node.states
             if not source_states:
                 print(f"  Warning: No states for node {source_node.id}")
                 edge.cost = float('inf')
                 continue
 
-            # Sample up to num_samples states
-            sample_size = min(num_samples, len(source_states))
-            rng = np.random.default_rng(42)
-            sampled_indices = rng.choice(len(source_states), size=sample_size, replace=False)
-            sampled_states = [source_states[i] for i in sampled_indices]
-
+            # Measure cost for each state, treating failures as high cost
+            # Use 2x max_skill_steps as the penalty for failures
+            failure_penalty = 2 * self._max_skill_steps
             costs = []
-            for state in sampled_states:
+            for state in source_states:
                 cost = self._measure_shortcut_cost(
                     raw_env, state, source_node, target_node, shortcut_id
                 )
+                # If failed (inf), use failure penalty instead
                 if cost < float('inf'):
                     costs.append(cost)
+                else:
+                    costs.append(failure_penalty)
 
-            # Average cost
+            # Average cost including failures
             if costs:
                 avg_cost = np.mean(costs)
+                num_successes = sum(1 for c in costs if c < failure_penalty)
+                success_rate = num_successes / len(costs)
                 edge.cost = avg_cost
-                print(f"  Shortcut {shortcut_id} ({source_node.id}→{target_node.id}): {avg_cost:.1f} steps (from {len(costs)} samples)")
+                print(f"  Shortcut {shortcut_id} ({source_node.id}→{target_node.id}): {avg_cost:.1f} steps (success: {num_successes}/{len(source_states)} = {success_rate:.1%})")
             else:
                 edge.cost = float('inf')
-                print(f"  Shortcut {shortcut_id} ({source_node.id}→{target_node.id}): FAILED (all samples)")
+                print(f"  Shortcut {shortcut_id} ({source_node.id}→{target_node.id}): FAILED (no states)")
 
     def _measure_shortcut_cost(
         self,
@@ -757,6 +828,14 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
 
         # Execute policy
         obs = initial_state
+
+        # Debug logging for specific shortcuts
+        debug_shortcut = (source_node.id == 0 and target_node.id == 7) or (source_node.id == 2 and target_node.id == 4)
+        if debug_shortcut:
+            print(f"\n  [DEBUG] Measuring shortcut {source_node.id}→{target_node.id}")
+            print(f"  [DEBUG] Source atoms ({len(source_atoms)}): {sorted([str(a) for a in source_atoms])}")
+            print(f"  [DEBUG] Target atoms ({len(target_atoms)}): {sorted([str(a) for a in target_atoms])}")
+
         for step in range(self._max_skill_steps):
             action = self.policy.get_action(obs)
             if action is None:
@@ -765,8 +844,22 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
             obs, _, term, trunc, _ = env.step(action)
             atoms = self.system.perceiver.step(obs)
 
-            # Check if reached target
+            if debug_shortcut:
+                print(f"  [DEBUG] Step {step + 1}: perceived {len(atoms)} atoms")
+                # Show which target atoms are satisfied
+                satisfied = target_atoms.intersection(atoms)
+                missing = target_atoms - atoms
+                extra = atoms - target_atoms
+                print(f"  [DEBUG]   Satisfied: {len(satisfied)}/{len(target_atoms)}")
+                if missing:
+                    print(f"  [DEBUG]   Missing: {sorted([str(a) for a in missing])}")
+                if len(extra) < 5:  # Only show if not too many
+                    print(f"  [DEBUG]   Extra: {sorted([str(a) for a in extra])}")
+
+            # Check if reached target (must match exactly)
             if target_atoms == atoms:
+                if debug_shortcut:
+                    print(f"  [DEBUG] SUCCESS at step {step + 1}!")
                 return float(step + 1)
 
             if term or trunc:
@@ -821,7 +914,7 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
             self._current_skill = self._get_skill(self._current_operator)
             self._current_skill.reset(self._current_operator)
 
-        # Check if current edge's target state is achieved
+        # Check if current edge's target state is achieved (exact match required)
         if self._current_edge and set(self._current_edge.target.atoms) == atoms:
             print("Edge target achieved")
             self._current_edge = None

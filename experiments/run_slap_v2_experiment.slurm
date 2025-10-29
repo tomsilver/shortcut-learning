@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=slap_v2_experiment  # Job name
-#SBATCH --output=outputs/slap_v2_experiment.out  # Output file
-#SBATCH --error=outputs/slap_v2_experiment.err  # Error file
+#SBATCH --output=/scratch/gpfs/TSILVER/de7281/shortcut_learning/slap_v2_experiment_%j.out  # Output file with job ID
+#SBATCH --error=/scratch/gpfs/TSILVER/de7281/shortcut_learning/slap_v2_experiment_%j.err  # Error file with job ID
 #SBATCH --time=08:00:00  # Maximum runtime (hh:mm:ss) - longer for training
 #SBATCH --partition=normal  # Partition to submit to
 #SBATCH --nodes=1  # Number of nodes
@@ -27,8 +27,13 @@ python run_single_experiment.py \
     approach.approach_type=slap_v2 \
     policy.policy_type=multi_rl_ppo_v2 \
     system=obstacle2d \
-    collection.states_per_node=20 \
-    collection.perturbation_steps=10 \
-    training.runs_per_shortcut=5 \
-    training.max_env_steps=128 \
+    collection.states_per_node=100 \
+    training.runs_per_shortcut=1000 \
+    training.max_env_steps=50 \
+    training.training_record_interval=10 \
     evaluation.num_episodes=100
+
+# Note: Output files are already in /scratch/gpfs/TSILVER/de7281/shortcut_learning/
+# Hydra creates its own output directory structure in experiments/outputs/
+echo "Experiment complete! Output files are in /scratch/gpfs/TSILVER/de7281/shortcut_learning/"
+echo "Hydra outputs are in: $(ls -td experiments/outputs/20*/*/ 2>/dev/null | head -1)"

@@ -34,17 +34,22 @@ def train_single_policy_v2(
         env: Wrapped environment (SLAPWrapperV2)
         train_data: Training data for this shortcut
         train_config: Training configuration
-        policy_key: Optional key for logging (e.g., "shortcut_0")
+        policy_key: Optional key for logging (e.g., "shortcut_0 (2→4)")
 
     Returns:
         True on success
     """
+    # Extract node IDs for better logging
+    if train_data.shortcuts:
+        source_node, target_node = train_data.shortcuts[0]
+        full_policy_key = f"{policy_key} ({source_node.id}→{target_node.id})" if policy_key else f"({source_node.id}→{target_node.id})"
+    else:
+        full_policy_key = policy_key
+
     callback = TrainingProgressCallback(
         check_freq=train_config.training_record_interval,
-        early_stopping=True,
-        early_stopping_patience=1,
-        early_stopping_threshold=0.8,
-        policy_key=policy_key,
+        early_stopping=False,  # Disabled: we want to minimize steps, not just achieve success
+        policy_key=full_policy_key,
     )
     policy.train(env, train_config, train_data, callback=callback)
     return True
@@ -229,7 +234,8 @@ class MultiRLPolicyV2(Policy[ObsType, ActType]):
             # Create callback
             callback = TrainingProgressCallback(
                 check_freq=train_config.training_record_interval,
-                policy_key=f"shortcut_{shortcut_id}",
+                early_stopping=False,  # Disabled: we want to minimize steps, not just achieve success
+                policy_key=f"shortcut_{shortcut_id} ({source_node.id}→{target_node.id})",
             )
 
             # Train this policy

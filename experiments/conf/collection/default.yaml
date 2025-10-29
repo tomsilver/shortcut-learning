@@ -9,7 +9,8 @@ action_scale: 1.0
 collect_episodes: 10
 
 # V2 collection parameters
-states_per_node: 10  # Number of diverse states to collect per node
-perturbation_steps: 5  # Random action steps for state diversity
+# states_per_node now means states per incoming edge (each node will have more total states)
+states_per_node: 10  # States to collect per incoming edge (node with 3 edges gets 30 states total)
+perturbation_steps: 5  # Small perturbations to create state diversity (needed to bypass duplicate check)
 
 skip_collect: False

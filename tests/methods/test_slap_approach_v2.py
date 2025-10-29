@@ -14,6 +14,9 @@ from shortcut_learning.methods.pipeline import (
     Metrics
 )
 from shortcut_learning.problems.obstacle2d.system import BaseObstacle2DTAMPSystem
+from shortcut_learning.problems.obstacle2d_hard.system import (
+    BaseObstacle2DTAMPSystem as BaseObstacle2DHardTAMPSystem,
+)
 
 
 def run_episode(system, approach, max_steps):
@@ -37,7 +40,7 @@ def run_episode(system, approach, max_steps):
 
 @pytest.mark.parametrize(
     "system_cls",
-    [BaseObstacle2DTAMPSystem],
+    [BaseObstacle2DTAMPSystem, BaseObstacle2DHardTAMPSystem],
 )
 def test_slap_approach_v2(system_cls):
     """Test random approach on different environments."""
