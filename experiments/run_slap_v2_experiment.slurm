@@ -2,7 +2,7 @@
 #SBATCH --job-name=slap_v2_experiment  # Job name
 #SBATCH --output=/scratch/gpfs/TSILVER/de7281/shortcut_learning/slap_v2_experiment_%j.out  # Output file with job ID
 #SBATCH --error=/scratch/gpfs/TSILVER/de7281/shortcut_learning/slap_v2_experiment_%j.err  # Error file with job ID
-#SBATCH --time=08:00:00  # Maximum runtime (hh:mm:ss) - longer for training
+#SBATCH --time=02:00:00  # Maximum runtime (hh:mm:ss) - longer for training
 #SBATCH --partition=normal  # Partition to submit to
 #SBATCH --nodes=1  # Number of nodes
 #SBATCH --ntasks=1  # Number of tasks
@@ -11,11 +11,15 @@
 #SBATCH --gres=gpu:1  # Request one GPU
 
 # Load necessary modules
-module load python/3.8  # Adjust to your Python version
-module load cuda/11.3  # Adjust to your CUDA version
+module load intel-mkl/2024.2  # Load Intel MKL for numpy
 
-# Activate your virtual environment
-source /home/de7281/thesis/shortcut-learning/.venv/bin/activate  # Adjust to your virtual environment path
+# Set library paths for IKFast (if using obstacle_tower)
+export LAPACK_DIR="/usr/lib64"
+export LIBGFORTRAN_DIR="/usr/lib64"
+export BLAS_DIR="/usr/lib64"
+
+# Activate virtual environment (created in scratch, can be used from anywhere)
+source /scratch/gpfs/TSILVER/de7281/shortcut-learning-venv/bin/activate
 
 # Navigate to the experiment directory
 cd /home/de7281/thesis/shortcut-learning/experiments

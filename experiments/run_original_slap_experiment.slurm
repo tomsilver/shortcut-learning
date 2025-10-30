@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=original_slap_obstacle2d
+#SBATCH --job-name=original_slap_experiment
 #SBATCH --output=/scratch/gpfs/TSILVER/de7281/shortcut_learning/original_slap_%j.out
 #SBATCH --error=/scratch/gpfs/TSILVER/de7281/shortcut_learning/original_slap_%j.err
-#SBATCH --time=08:00:00  # Maximum runtime
+#SBATCH --time=02:00:00  # Maximum runtime
 #SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -11,16 +11,20 @@
 #SBATCH --gres=gpu:1
 
 # Load necessary modules
-module load python/3.11 2>/dev/null || module load python/3.10 2>/dev/null || module load python/3.8
-module load cuda/11.3 2>/dev/null || true
+module load intel-mkl/2024.2  # Load Intel MKL for numpy
+
+# Set library paths for IKFast (if using obstacle_tower)
+export LAPACK_DIR="/usr/lib64"
+export LIBGFORTRAN_DIR="/usr/lib64"
+export BLAS_DIR="/usr/lib64"
 
 # Set up paths
 ORIGINAL_CODE_DIR="/home/de7281/thesis/shortcut-learning-isabel/SLAP/code"
-OUR_VENV_DIR="/home/de7281/thesis/shortcut-learning/.venv"
+VENV_DIR="/scratch/gpfs/TSILVER/de7281/shortcut-learning-venv"
 
-# Use our existing venv which already has all dependencies
-echo "Using existing venv with all dependencies..."
-source "$OUR_VENV_DIR/bin/activate"
+# Use venv created in scratch (can be used from anywhere)
+echo "Using venv with all dependencies from scratch..."
+source "$VENV_DIR/bin/activate"
 
 # Verify dependencies are available
 if ! python -c "import torch; import numpy; import gymnasium" 2>/dev/null; then
