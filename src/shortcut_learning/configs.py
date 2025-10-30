@@ -114,4 +114,8 @@ class CollectionConfig:
     states_per_node: int = 10  # Number of diverse states to collect per node
     perturbation_steps: int = 5  # Random steps to apply for state perturbation
 
+    # Cache paths for collection data
+    collection_save_path: str | None = None  # Path to save collected data
+    collection_load_path: str | None = None  # Path to load cached data
+
     skip_collect: bool = False

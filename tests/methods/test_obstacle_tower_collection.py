@@ -23,7 +23,7 @@ def test_obstacle_tower_planning_graph():
         seed=42
     )
     approach_config = ApproachConfig(
-        approach_type="slap",
+        approach_type="slap_v2",
         approach_name="test_obstacle_tower",
         debug_videos=False,
         seed=42,

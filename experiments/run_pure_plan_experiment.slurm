@@ -21,4 +21,4 @@ source /home/de7281/thesis/shortcut-learning/.venv/bin/activate  # Adjust to you
 cd /home/de7281/thesis/shortcut-learning/experiments
 
 # Run the experiment with Hydra
-python run_single_experiment.py approach.approach_type=slap system=obstacle2d training.skip_train=True
+python run_single_experiment.py approach.approach_type=slap_v2 system=obstacle2d training.skip_train=True

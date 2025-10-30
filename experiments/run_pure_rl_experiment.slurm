@@ -21,4 +21,4 @@ source /home/de7281/thesis/shortcut-learning/.venv/bin/activate  # Adjust to you
 cd /home/de7281/thesis/shortcut-learning/experiments
 
 # Run the experiment with Hydra
-python run_single_experiment.py approach=pure_rl system=obstacle2d training.num_episodes=1 training.skip_train=True
+python run_single_experiment.py approach=pure_rl system=obstacle2d training.runs_per_shortcut=100 training.skip_train=False

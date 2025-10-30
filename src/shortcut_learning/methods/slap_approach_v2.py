@@ -652,6 +652,10 @@ class SLAPApproachV2(BaseApproach[ObsType, ActType]):
         2. Add k shortcut edges to planning graph
         3. Compute costs by sampling from training states
         """
+
+        if train_config.skip_train:
+            return
+        
         print("\n" + "="*60)
         print("TRAINING V2")
         print("="*60)

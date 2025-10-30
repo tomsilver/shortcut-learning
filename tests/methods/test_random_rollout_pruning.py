@@ -51,7 +51,13 @@ def test_random_rollout_pruning():
         max_shortcuts_per_graph=100,
     )
 
-    train_data_no_pruning = collect_training_data_v2(approach, collect_config_no_pruning)
+    # Use temp file for caching
+    import tempfile
+    import os
+    tmp_fd1, tmp_path1 = tempfile.mkstemp(suffix='_no_pruning.pkl')
+    os.close(tmp_fd1)
+
+    train_data_no_pruning = collect_training_data_v2(approach, collect_config_no_pruning, save_path=tmp_path1)
     num_shortcuts_no_pruning = len(train_data_no_pruning)
 
     print(f"\n📊 WITHOUT pruning: {num_shortcuts_no_pruning} shortcuts selected")
@@ -77,7 +83,11 @@ def test_random_rollout_pruning():
         max_shortcuts_per_graph=100,
     )
 
-    train_data_with_pruning = collect_training_data_v2(approach, collect_config_with_pruning)
+    # Use temp file for caching
+    tmp_fd2, tmp_path2 = tempfile.mkstemp(suffix='_with_pruning.pkl')
+    os.close(tmp_fd2)
+
+    train_data_with_pruning = collect_training_data_v2(approach, collect_config_with_pruning, save_path=tmp_path2)
     num_shortcuts_with_pruning = len(train_data_with_pruning)
 
     print(f"\n📊 WITH pruning: {num_shortcuts_with_pruning} shortcuts selected")

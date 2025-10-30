@@ -2,7 +2,7 @@
 #SBATCH --job-name=slap_v2_experiment  # Job name
 #SBATCH --output=/scratch/gpfs/TSILVER/de7281/shortcut_learning/slap_v2_experiment_%j.out  # Output file with job ID
 #SBATCH --error=/scratch/gpfs/TSILVER/de7281/shortcut_learning/slap_v2_experiment_%j.err  # Error file with job ID
-#SBATCH --time=02:00:00  # Maximum runtime (hh:mm:ss) - longer for training
+#SBATCH --time=08:00:00  # Maximum runtime (hh:mm:ss) - longer for training
 #SBATCH --partition=normal  # Partition to submit to
 #SBATCH --nodes=1  # Number of nodes
 #SBATCH --ntasks=1  # Number of tasks

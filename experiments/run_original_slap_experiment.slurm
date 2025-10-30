@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --job-name=original_slap_experiment
-#SBATCH --output=/scratch/gpfs/TSILVER/de7281/shortcut_learning/original_slap_%j.out
-#SBATCH --error=/scratch/gpfs/TSILVER/de7281/shortcut_learning/original_slap_%j.err
-#SBATCH --time=02:00:00  # Maximum runtime
+#SBATCH --output=/scratch/gpfs/TSILVER/de7281/shortcut_learning/original_slap_experiment_%j.out
+#SBATCH --error=/scratch/gpfs/TSILVER/de7281/shortcut_learning/original_slap_experiment_%j.err
+#SBATCH --time=08:00:00  # Maximum runtime
 #SBATCH --partition=normal
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
@@ -37,6 +37,9 @@ echo "Dependencies verified!"
 # Navigate to the code directory
 cd "$ORIGINAL_CODE_DIR"
 
+# Add the src directory to PYTHONPATH so modules can be imported
+export PYTHONPATH="$ORIGINAL_CODE_DIR/src:$PYTHONPATH"
+
 echo "========================================="
 echo "Running Original SLAP Paper Code"
 echo "Environment: obstacle2d"
@@ -46,7 +49,7 @@ echo ""
 
 # Run the experiment with parameters matching the paper
 # From config.json: episodes_per_scenario=1000, max_training_steps_per_shortcut=50
-python -m src.tamp_improv.run_experiments --system=obstacle2d --episodes=1000
+python -m tamp_improv.run_experiments --system=obstacle2d --episodes=1000
 
 echo ""
 echo "========================================="

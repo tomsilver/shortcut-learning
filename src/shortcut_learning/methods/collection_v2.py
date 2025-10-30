@@ -27,8 +27,6 @@ ActType = TypeVar("ActType")
 def collect_diverse_states_per_node(
     approach: SLAPApproach,
     states_per_node: int = 10,
-    perturbation_steps: int = 5,
-    use_multi_start: bool = True,
 ) -> None:
     """Collect diverse low-level states for each node in the planning graph.
 
@@ -48,16 +46,11 @@ def collect_diverse_states_per_node(
         perturbation_steps: Number of random action steps for perturbations
         use_multi_start: If True, use multi-start strategy for even coverage (default)
     """
-    if use_multi_start:
-        _collect_diverse_states_multi_start(approach, states_per_node, perturbation_steps)
-    else:
-        _collect_diverse_states_single_start(approach, states_per_node, perturbation_steps)
-
+    _collect_diverse_states_multi_start(approach, states_per_node)
 
 def _collect_diverse_states_multi_start(
     approach: SLAPApproach,
     states_per_node: int = 10,
-    perturbation_steps: int = 5,
 ) -> None:
     """Collect states using simple BFS exploration from reset.
 
@@ -84,11 +77,21 @@ def _collect_diverse_states_multi_start(
         return
 
     # Run collection episodes
+    import time
+
+    # Timing statistics
+    total_reset_time = 0.0
+    total_bfs_time = 0.0
+    total_skill_time = 0.0
+    total_episodes_with_timing = 0
+
     for episode in range(num_episodes):
-        if (episode + 1) % 10 == 0:
+        episode_start = time.time()
+        if (episode + 1) % 10 == 0 or episode == 0:
             print(f"  Episode {episode + 1}/{num_episodes}")
 
         # Reset to random initial state
+        reset_start = time.time()
         obs, info = system.reset()
 
         # Get initial atoms to find starting node
@@ -100,6 +103,7 @@ def _collect_diverse_states_multi_start(
             if set(node.atoms) == atoms:
                 start_node = node
                 break
+        reset_time = time.time() - reset_start
 
         if start_node is None:
             # Initial state not in graph - skip this episode
@@ -114,9 +118,13 @@ def _collect_diverse_states_multi_start(
         queue = deque([(start_node, obs, None)])  # Start has no incoming edge
         visited_edges = set()  # Track (source_id, target_id, edge_id) tuples
 
+        bfs_start = time.time()
+        edges_explored = 0
+
         while queue:
             current_node, current_obs, incoming_edge = queue.popleft()
 
+            # print(current_node)
             # Save this state (add after BFS to avoid modifying during iteration)
             states_to_save.append((current_node, current_obs, incoming_edge))
 
@@ -139,6 +147,9 @@ def _collect_diverse_states_multi_start(
                 visited_edges.add(edge_sig)
 
                 # Try to execute this edge
+                skill_start = time.time()
+                edges_explored += 1
+
                 env = system.env
                 env.reset_from_state(current_obs)
 
@@ -165,9 +176,13 @@ def _collect_diverse_states_multi_start(
                     if term or trunc:
                         break
 
+                total_skill_time += time.time() - skill_start
+
                 if succeeded:
                     # Add to queue for further exploration
                     queue.append((edge.target, next_obs, edge.edge_id))
+
+        bfs_time = time.time() - bfs_start
 
         # Now save all collected states (avoiding duplicates)
         episode_collected = 0
@@ -180,9 +195,17 @@ def _collect_diverse_states_multi_start(
             else:
                 episode_duplicates += 1
 
-        # Debug: show episodes that collected states, or first 10 episodes
-        if episode_collected > 0 or episode < 10:
-            print(f"    Episode {episode}: started at node {start_node.id}, saved {episode_collected} states, rejected {episode_duplicates} duplicates")
+        # Update timing stats
+        total_reset_time += reset_time
+        total_bfs_time += bfs_time
+        total_episodes_with_timing += 1
+
+        # Detailed timing for first few episodes or episodes with interesting activity
+        episode_time = time.time() - episode_start
+        if episode < 5 or episode_collected > 0 or (episode + 1) % 10 == 0:
+            print(f"    Episode {episode}: node {start_node.id}, explored {edges_explored} edges, "
+                  f"saved {episode_collected} states, rejected {episode_duplicates} dups "
+                  f"[reset: {reset_time:.2f}s, BFS: {bfs_time:.2f}s, total: {episode_time:.2f}s]")
 
     # Print summary
     total_states = sum(len(node.states) for node in planning_graph.nodes)
@@ -195,99 +218,15 @@ def _collect_diverse_states_multi_start(
                               for k, v in sorted(edge_counts.items(), key=lambda x: (x[0] is None, x[0])))
         print(f"  Node {node.id}: {len(node.states)} states ({len(unique_edges)} incoming edges: {edge_info})")
 
-
-def _collect_diverse_states_single_start(
-    approach: SLAPApproach,
-    states_per_node: int = 10,
-    perturbation_steps: int = 5,
-) -> None:
-    """Original single-start collection strategy (always start from node 0)."""
-    print(f"\n=== Collecting {states_per_node} states per node (SINGLE-START) ===")
-
-    system = approach.system
-    planning_graph = approach.planning_graph
-    assert planning_graph is not None, "Planning graph must be created first"
-
-    # Get initial node
-    if not planning_graph.nodes:
-        return
-    initial_node = planning_graph.nodes[0]
-
-    # Collect multiple diverse states for the initial node
-    # Note: Each system.reset() produces a different random initial state,
-    # providing natural diversity in continuous states for the same abstract state
-    print(f"\nCollecting states for node {initial_node.id} (initial node)...")
-    for attempt in range(states_per_node):
-        obs, info = system.reset()
-
-        # Apply perturbations for additional diversity (skip first attempt)
-        if attempt > 0 and perturbation_steps > 0:
-            for _ in range(perturbation_steps):
-                random_action = system.env.action_space.sample()
-                obs, _, term, trunc, _ = system.env.step(random_action)
-                if term or trunc:
-                    break
-
-            # Verify we're still at the initial node
-            atoms = system.perceiver.step(obs)
-            if set(initial_node.atoms) != atoms:
-                continue
-
-        # Check for duplicates and add state
-        if not _is_duplicate_state(obs, initial_node.states):
-            initial_node.states.append(obs)
-            # Initial node has no incoming edge (it's the starting state)
-            initial_node.state_incoming_edges.append(None)
-
-    print(f"  Collected {len(initial_node.states)} states for node {initial_node.id}")
-
-    # For each other node, reach it and collect states
-    for target_node in planning_graph.nodes:
-        if target_node == initial_node:
-            continue
-
-        print(f"\nCollecting states for node {target_node.id}...")
-
-        # Find a path to this node (using only regular edges)
-        path = _find_regular_path(planning_graph, initial_node, target_node)
-        if not path:
-            print(f"  No path found to node {target_node.id}")
-            continue
-
-        # Collect multiple diverse states for this node
-        # Note: Each system.reset() produces a different initial state, and skills
-        # may fail on some configurations or perturbations may change the abstract state.
-        # We try multiple times to collect the requested number of states.
-        states_collected = 0
-        max_attempts = states_per_node * 3  # Try more times if some fail
-
-        for attempt in range(max_attempts):
-            if states_collected >= states_per_node:
-                break
-
-            # Reset to a new random initial state and execute path
-            obs, info = system.reset()
-            final_obs, success = _execute_path(approach, obs, path, perturbation_steps if attempt > 0 else 0)
-
-            if success:
-                # Get current atoms
-                atoms = system.perceiver.step(final_obs)
-
-                # Verify we're at the right node
-                if set(target_node.atoms) == atoms:
-                    # Check if this state is different from existing ones
-                    if not _is_duplicate_state(final_obs, target_node.states):
-                        target_node.states.append(final_obs)
-                        # Track incoming edge (last edge in path)
-                        incoming_edge_id = path[-1].edge_id if path else None
-                        target_node.state_incoming_edges.append(incoming_edge_id)
-                        states_collected += 1
-
-        print(f"  Collected {len(target_node.states)} states for node {target_node.id}")
-
-    # Print summary
-    total_states = sum(len(node.states) for node in planning_graph.nodes)
-    print(f"\nTotal states collected: {total_states} across {len(planning_graph.nodes)} nodes")
+    # Print timing statistics
+    if total_episodes_with_timing > 0:
+        avg_reset = total_reset_time / total_episodes_with_timing
+        avg_bfs = total_bfs_time / total_episodes_with_timing
+        avg_skill = total_skill_time / total_episodes_with_timing
+        print(f"\nTiming Statistics (avg per episode):")
+        print(f"  Reset: {avg_reset:.3f}s")
+        print(f"  BFS+Skills: {avg_bfs:.3f}s (skill execution: {avg_skill:.3f}s)")
+        print(f"  Total collection time: {total_reset_time + total_bfs_time:.1f}s")
 
 
 def _find_regular_path(
@@ -317,71 +256,71 @@ def _find_regular_path(
     return []
 
 
-def _execute_path(
-    approach: SLAPApproach,
-    obs: Any,
-    path: list[Any],
-    perturbation_steps: int = 0,
-) -> tuple[Any, bool]:
-    """Execute a path through the graph.
+# def _execute_path(
+#     approach: SLAPApproach,
+#     obs: Any,
+#     path: list[Any],
+#     perturbation_steps: int = 0,
+# ) -> tuple[Any, bool]:
+#     """Execute a path through the graph.
 
-    Args:
-        approach: SLAP approach (contains system)
-        obs: Current observation (from system.reset())
-        path: List of edges to traverse
-        perturbation_steps: If > 0, apply random perturbations after each edge
+#     Args:
+#         approach: SLAP approach (contains system)
+#         obs: Current observation (from system.reset())
+#         path: List of edges to traverse
+#         perturbation_steps: If > 0, apply random perturbations after each edge
 
-    Returns:
-        Tuple of (final_obs, success)
-    """
-    system = approach.system
+#     Returns:
+#         Tuple of (final_obs, success)
+#     """
+#     system = approach.system
 
-    for edge in path:
-        if not edge.operator:
-            return obs, False
+#     for edge in path:
+#         if not edge.operator:
+#             return obs, False
 
-        # Get skill for this operator
-        skill = None
-        for s in system.skills:
-            if s.can_execute(edge.operator):
-                skill = s
-                break
+#         # Get skill for this operator
+#         skill = None
+#         for s in system.skills:
+#             if s.can_execute(edge.operator):
+#                 skill = s
+#                 break
 
-        if not skill:
-            return obs, False
+#         if not skill:
+#             return obs, False
 
-        skill.reset(edge.operator)
+#         skill.reset(edge.operator)
 
-        # Execute skill
-        max_skill_steps = 50
-        skill_success = False
-        for step in range(max_skill_steps):
-            action = skill.get_action(obs)
-            if action is None:
-                skill_success = True
-                break
-            obs, _, term, trunc, _ = system.env.step(action)
-            atoms = system.perceiver.step(obs)
+#         # Execute skill
+#         max_skill_steps = 50
+#         skill_success = False
+#         for step in range(max_skill_steps):
+#             action = skill.get_action(obs)
+#             if action is None:
+#                 skill_success = True
+#                 break
+#             obs, _, term, trunc, _ = system.env.step(action)
+#             atoms = system.perceiver.step(obs)
 
-            if set(edge.target.atoms) == atoms:
-                skill_success = True
-                break
+#             if set(edge.target.atoms) == atoms:
+#                 skill_success = True
+#                 break
 
-            if term or trunc:
-                return obs, False
+#             if term or trunc:
+#                 return obs, False
 
-        if not skill_success:
-            return obs, False
+#         if not skill_success:
+#             return obs, False
 
-        # Apply perturbations if requested
-        if perturbation_steps > 0:
-            for _ in range(perturbation_steps):
-                random_action = system.env.action_space.sample()
-                obs, _, term, trunc, _ = system.env.step(random_action)
-                if term or trunc:
-                    return obs, False
+#         # Apply perturbations if requested
+#         if perturbation_steps > 0:
+#             for _ in range(perturbation_steps):
+#                 random_action = system.env.action_space.sample()
+#                 obs, _, term, trunc, _ = system.env.step(random_action)
+#                 if term or trunc:
+#                     return obs, False
 
-    return obs, True
+#     return obs, True
 
 
 def _is_duplicate_state(state: Any, existing_states: list[Any]) -> bool:
@@ -670,6 +609,8 @@ def generate_training_data(
 def collect_training_data_v2(
     approach: SLAPApproach,
     config: CollectionConfig,
+    save_path: str | None = None,
+    load_path: str | None = None,
 ) -> ShortcutTrainingData:
     """Main entry point for v2 collection pipeline.
 
@@ -681,10 +622,38 @@ def collect_training_data_v2(
     Args:
         approach: SLAP approach (must have planning_graph already created)
         config: Collection configuration
+        save_path: Path to save collected data (required if load_path not provided)
+        load_path: Path to load previously collected data (skips collection if provided)
 
     Returns:
         ShortcutTrainingData containing the k shortcut pairs
+
+    Raises:
+        ValueError: If neither save_path nor load_path is provided
     """
+
+    # If load_path is provided, try to load from cache
+    if load_path is not None:
+        import pickle
+        from pathlib import Path
+
+        load_file = Path(load_path)
+        if not load_file.exists():
+            raise FileNotFoundError(f"Cache file not found: {load_path}")
+
+        print("\n" + "="*60)
+        print("LOADING CACHED COLLECTION DATA")
+        print("="*60)
+        print(f"Loading from: {load_path}")
+
+        with open(load_file, "rb") as f:
+            training_data = pickle.load(f)
+
+        print(f"Loaded {training_data.num_training_examples()} examples for {len(training_data)} shortcuts")
+        print("="*60 + "\n")
+        return training_data
+
+    # Otherwise, perform collection
     print("\n" + "="*60)
     print("V2 COLLECTION PIPELINE")
     print("="*60)
@@ -697,7 +666,6 @@ def collect_training_data_v2(
     collect_diverse_states_per_node(
         approach,
         states_per_node=config.states_per_node,
-        perturbation_steps=config.perturbation_steps,
     )
 
     # Step 2: Select shortcut pairs
@@ -720,4 +688,108 @@ def collect_training_data_v2(
     print(f"COLLECTION COMPLETE: {training_data.num_training_examples()} examples for {len(training_data)} shortcuts")
     print("="*60 + "\n")
 
+    # Save to cache if save_path provided
+    if save_path is not None:
+        import pickle
+        from pathlib import Path
+
+        save_file = Path(save_path)
+        save_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(save_file, "wb") as f:
+            pickle.dump(training_data, f)
+
+        print(f"[CACHE] Saved collection data to: {save_path}\n")
+
     return training_data
+
+
+def save_collection_cache(
+    training_data: ShortcutTrainingData,
+    system_name: str,
+    cache_dir: str = "/scratch/gpfs/TSILVER/de7281/collection_cache",
+) -> str:
+    """Save collected training data to cache in /scratch/gpfs for reuse.
+
+    Args:
+        training_data: The collected training data
+        system_name: Name of the system (e.g., 'obstacle2d', 'obstacle_tower')
+        cache_dir: Directory to save cache files
+
+    Returns:
+        Path to the saved cache file
+    """
+    import pickle
+    from pathlib import Path
+    from datetime import datetime
+
+    cache_path = Path(cache_dir)
+    cache_path.mkdir(parents=True, exist_ok=True)
+
+    # Create filename with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{system_name}_collection_{timestamp}.pkl"
+    filepath = cache_path / filename
+
+    # Save training data
+    with open(filepath, "wb") as f:
+        pickle.dump(training_data, f)
+
+    # Also save a 'latest' symlink for easy access
+    latest_link = cache_path / f"{system_name}_collection_latest.pkl"
+    if latest_link.exists():
+        latest_link.unlink()
+    latest_link.symlink_to(filename)
+
+    print(f"\n[CACHE] Saved collection data to: {filepath}")
+    print(f"[CACHE] Symlinked to: {latest_link}")
+
+    return str(filepath)
+
+
+def load_collection_cache(
+    system_name: str,
+    cache_dir: str = "/scratch/gpfs/TSILVER/de7281/collection_cache",
+    use_latest: bool = True,
+) -> ShortcutTrainingData | None:
+    """Load cached training data from /scratch/gpfs.
+
+    Args:
+        system_name: Name of the system (e.g., 'obstacle2d', 'obstacle_tower')
+        cache_dir: Directory containing cache files
+        use_latest: If True, load the latest cached file; otherwise, list available files
+
+    Returns:
+        ShortcutTrainingData if found, None otherwise
+    """
+    import pickle
+    from pathlib import Path
+
+    cache_path = Path(cache_dir)
+    if not cache_path.exists():
+        print(f"[CACHE] No cache directory found at {cache_path}")
+        return None
+
+    if use_latest:
+        latest_link = cache_path / f"{system_name}_collection_latest.pkl"
+        if not latest_link.exists():
+            print(f"[CACHE] No cached collection found for {system_name}")
+            return None
+
+        print(f"[CACHE] Loading collection data from: {latest_link}")
+        with open(latest_link, "rb") as f:
+            training_data = pickle.load(f)
+
+        print(f"[CACHE] Loaded {training_data.num_training_examples()} examples for {len(training_data)} shortcuts")
+        return training_data
+    else:
+        # List available cache files
+        cache_files = sorted(cache_path.glob(f"{system_name}_collection_*.pkl"))
+        if not cache_files:
+            print(f"[CACHE] No cached collections found for {system_name}")
+            return None
+
+        print(f"[CACHE] Available cache files for {system_name}:")
+        for i, f in enumerate(cache_files):
+            print(f"  {i}: {f.name}")
+        return None

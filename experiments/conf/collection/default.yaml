@@ -11,6 +11,7 @@ collect_episodes: 10
 # V2 collection parameters
 # states_per_node now means states per incoming edge (each node will have more total states)
 states_per_node: 10  # States to collect per incoming edge (node with 3 edges gets 30 states total)
-perturbation_steps: 5  # Small perturbations to create state diversity (needed to bypass duplicate check)
-
 skip_collect: False
+
+collection_save_path: None
+collection_load_path: None

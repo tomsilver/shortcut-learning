@@ -97,7 +97,12 @@ def collect_approach(  # pylint: disable=useless-return
         obs, info = approach.system.reset()
         approach.build_planning_graph(obs, info)
 
-    train_data = collect_training_data_v2(approach, collect_config)
+    train_data = collect_training_data_v2(
+        approach,
+        collect_config,
+        save_path=collect_config.collection_save_path,
+        load_path=collect_config.collection_load_path,
+    )
     return train_data
 
 
