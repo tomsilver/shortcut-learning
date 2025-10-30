@@ -10,6 +10,13 @@
 #SBATCH --mem=32G  # More memory for larger graphs and training
 #SBATCH --gres=gpu:1  # Request one GPU
 
+BASE_PATH=${1:-/home/sl5183/ECE531}
+SCRATCH_PATH=${2:-/home/sl5183/ECE531/shortcut_learning/.venv}
+OUTPUT_PATH=${3:-/home/sl5183/ECE531/shortcut_learning/experiments/outputs}
+
+#SBATCH --output=${OUTPUT_PATH}/slap_v2_experiment_%j.out  # Output file with job ID
+#SBATCH --error=${OUTPUT_PATH}/slap_v2_experiment_%j.err  # Error file with job ID
+
 # Load necessary modules
 module load intel-mkl/2024.2  # Load Intel MKL for numpy
 
@@ -19,10 +26,10 @@ export LIBGFORTRAN_DIR="/usr/lib64"
 export BLAS_DIR="/usr/lib64"
 
 # Activate virtual environment (created in scratch, can be used from anywhere)
-source /scratch/gpfs/TSILVER/de7281/shortcut-learning-venv/bin/activate
+source ${SCRATCH_PATH}/bin/activate
 
 # Navigate to the experiment directory
-cd /home/de7281/thesis/shortcut-learning/experiments
+cd ${BASE_PATH}/shortcut-learning/experiments
 
 # Run the SLAP V2 experiment with Hydra
 # Override defaults to use slap_v2 approach with multi_rl_ppo_v2 policy

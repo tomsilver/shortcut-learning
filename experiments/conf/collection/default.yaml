@@ -12,6 +12,9 @@ collect_episodes: 10
 # states_per_node now means states per incoming edge (each node will have more total states)
 states_per_node: 10  # States to collect per incoming edge (node with 3 edges gets 30 states total)
 skip_collect: False
+<<<<<<< HEAD
 
 collection_save_path: None
 collection_load_path: None
+=======
+>>>>>>> 84b1fd2cefad7a477aac10858bd63310fab51fb1
