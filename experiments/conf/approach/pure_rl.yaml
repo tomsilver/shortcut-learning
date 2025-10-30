@@ -1,0 +1,3 @@
+_target_: "shortcut_learning.configs.ApproachConfig"
+approach_type: "pure_rl"
+approach_name: "pure_rl"

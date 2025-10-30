@@ -1,0 +1,3 @@
+_target_: "shortcut_learning.configs.ApproachConfig"
+approach_type: "random"
+approach_name: "random"

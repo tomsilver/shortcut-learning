@@ -1,6 +1,10 @@
 """Run a single experiment."""
 
 import logging
+<<<<<<< HEAD
+=======
+import time
+>>>>>>> 0e4742e2d69e7b97c3c03f7928c852088f951cb7
 
 import hydra
 from omegaconf import DictConfig
