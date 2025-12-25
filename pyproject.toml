@@ -3,97 +3,75 @@ requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "shortcut_learning"
+name = "tamp_improv"
 version = "0.1.0"
-description = "Shortcut learning."
+description = "TAMP physical improvisation."
 readme = "README.md"
-requires-python = ">=3.10,<4.0"
+requires-python = ">=3.11"
 dependencies = [
-   "matplotlib",
-   "seaborn",
-   "numpy",
-   "scipy",
-   "scikit-image",
-   "scikit-learn",
-   "imageio",
-   "pandas",
-   "pandas-stubs",
-   "hydra-core",
-   "omegaconf",
-   "moviepy==1.0.3",
-   "torch",
-   "tqdm",
-   "types-tqdm",
-   "wandb",
-   "cachetools",
-   "pybullet==3.2.7",
-   "pybullet_helpers@git+https://github.com/tomsilver/pybullet-helpers.git",
-   "tomsutils@git+https://github.com/tomsilver/toms-utils.git",
-   "tomsgeoms2d@git+https://github.com/tomsilver/toms-geoms-2d.git",
-   "task_then_motion_planning@git+https://github.com/tomsilver/task-then-motion-planning.git",
-   "relational-structs@git+https://github.com/tomsilver/relational-structs.git",
-   "pybullet-blocks@git+https://github.com/tomsilver/pybullet-blocks.git",
-   "gymnasium>=1.0.0",
-   "stable_baselines3==2.4.0",
-   "types-tabulate",
-   "pytest (>=8.4.2,<9.0.0)",
-   "black (>=25.9.0,<26.0.0)",
-   "docformatter (>=1.7.7,<2.0.0)",
-   "isort (>=6.1.0,<7.0.0)",
-   "ipykernel (>=6.30.1,<7.0.0)",
-   "pytest-pylint (>=0.21.0,<0.22.0)",
-   "mypy (>=1.18.2,<2.0.0)",
-   "iio (>=29,<30)",
-   "autopep8 (>=2.3.2,<3.0.0)",
+    "numpy==1.26.4",
+    "pandas==2.2.3",
+    "scipy==1.14.0",
+    "matplotlib==3.9.2",
+    "pandas-stubs==2.2.2.240909",
+    "types-tabulate==0.9.0.20241207",
+    "hydra-core==1.3.2",
+    "omegaconf==2.3.0",
+    "gymnasium==1.0.0",
+    "stable_baselines3==2.4.0",
+    "pybullet==3.2.7",
+    "moviepy==1.0.3",
+    "objaverse==0.1.7",
+    "trimesh==4.7.1",
+    "matplotlib-inline==0.1.7",
+    "tqdm==4.66.5",
+    "tomsutils@git+https://github.com/tomsilver/toms-utils.git",
+    "tomsgeoms2d@git+https://github.com/tomsilver/toms-geoms-2d.git",
+    "task-then-motion-planning@git+https://github.com/tomsilver/task-then-motion-planning.git",
+    "relational-structs@git+https://github.com/tomsilver/relational-structs.git",
+    "pybullet-blocks@git+https://github.com/tomsilver/pybullet-blocks.git",
+    "pybullet_helpers@git+https://github.com/tomsilver/pybullet-helpers.git",
 ]
 
 [project.optional-dependencies]
 develop = [
-    "black",
-    "docformatter",
-    "isort",
-    "mypy",
-    "pylint>=2.14.5",
-    "pytest-pylint>=0.18.0",
-    "pytest>=7.2.2",
+    "black>=25.0.0",
+    "docformatter==1.7.5",
+    "isort>=5.13.2",
+    "mypy==1.11.2",
+    "pylint==3.3.1",
+    "pytest==8.3.3",
+    "pytest-pylint==0.21.0",
+    "ipdb==0.13.13",
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-shortcut_learning = ["py.typed"]
+tamp_improv = ["py.typed"]
 
 [tool.black]
 line-length = 88
-target-version = ["py310"]
+target-version = ["py311"]
 
 [tool.isort]
-py_version = 310
+py_version = 311
 profile = "black"
 multi_line_output = 2
-src_paths = ["src"]
 skip_glob = ["venv/*"]
 split_on_trailing_comma = true
 
 [tool.mypy]
 strict_equality = true
 disallow_untyped_calls = true
-disable_error_code = ["method-assign"]
 warn_unreachable = true
-exclude = ["venv/*"]
+exclude = ["venv/*", "scripts/*"]
 
 [[tool.mypy.overrides]]
 module = [
     "matplotlib.*",
-    "scipy.*",
-    "skimage.*",
-    "assistive_gym.*",
-    "pybullet.*",
-    "seaborn.*",
-    "moviepy.*",
-    "sklearn.*",
-    "graphviz.*",
-    "cachetools.*",
+    "networkx.*",
+    "objaverse.*",
 ]
 ignore_missing_imports = true

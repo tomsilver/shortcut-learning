@@ -1,0 +1,86 @@
+seed: 42
+debug: true
+render_mode: null
+eval_heuristic_only: true  # If true, stop pipeline after heuristic evaluation (stage 2.5)
+
+env:
+  name: GraphObstacle2DTAMPSystem
+  # Gridworld
+  num_cells: 5
+  num_states_per_cell: 10
+  num_teleporters: 3
+
+  # Blocks
+  n_blocks: 2
+  num_obstacle_blocks: 3
+
+
+collection:
+  num_episodes: 1000
+  max_steps_per_edge: 100
+  planner_id: pyperplan
+
+heuristic:
+  max_shortcuts_per_graph: 10
+
+  # Heuristic Parameters
+  type: crl
+
+  # Rollout Heuristic Parameters
+  num_rollouts_per_node: 100
+  max_steps_per_rollout: 100
+  shortcut_success_threshold: 0.1
+  shortcut_length_factor: 1
+  action_scale: 1.0
+
+  # CRL Heuristic Parameters
+  hidden_dims: [64, 64]
+  latent_dim: 64
+  normalize_embeddings: false
+  learning_rate: 0.001
+  batch_size: 256
+  buffer_size: 100000
+  gamma: 0.99
+  repetition_factor: 8
+  policy_temperature: 0.5
+  iters_per_epoch: 100
+  learn_frequency: 4
+  num_epochs_per_round: 400 # Epochs per round (used as num_epochs_per_round in multi_train)
+  trajectories_per_epoch: 10
+  max_episode_steps: 200
+  num_rounds: 5  # Number of pruning rounds (1 = no pruning, just normal train)
+  keep_fraction: 0.2  # Fraction of node-node pairs to keep each round
+  exploration_factor: 0.1
+  eval_temperature: 0
+
+  # Evaluate Heuristic
+  eval_rollouts: 100
+  eval_max_steps: 200
+
+  
+
+policy:
+  type: multiRL
+  learning_rate: 3.0e-4
+  batch_size: 32
+  n_epochs: 1
+  gamma: 0.99
+  ent_coef: 0.01
+  deterministic: true
+  early_stopping: false
+  early_stopping_patience: 10
+  max_episode_steps: 100
+  episodes_per_scenario: 10
+  training_record_interval: 100
+
+  eval_rollouts: 100
+
+
+evaluation:
+  render: false
+  fast_eval: false
+  num_episodes: 3
+  max_episode_steps: 100
+
+
+

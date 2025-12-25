@@ -1,0 +1,106 @@
+seed: 42
+debug: true
+render_mode: null
+eval_heuristic_only: false
+wandb_enabled: false
+
+env:
+  name: GridworldFixedTAMPSystem
+  # Gridworld
+  num_cells: 3
+  num_states_per_cell: 10
+  num_teleporters: 2
+
+  # Blocks
+  n_blocks: 2
+  num_obstacle_blocks: 3
+
+
+collection:
+  num_episodes: 10
+  max_steps_per_edge: 100
+  planner_id: pyperplan
+
+heuristic:
+  # Heuristic Parameters
+  type: crl
+
+  # Pruning Parameters
+  max_shortcuts_per_graph: 10
+  threshold: 0.05
+
+
+  # Rollout Heuristic Parameters
+  use_random_rollouts: true
+  num_rollouts_per_node: 100
+  max_steps_per_rollout: 100
+  action_scale: 1.0
+
+  # CRL Heuristic Parameters
+
+  hidden_dims: [64, 64]
+  latent_dim: 16
+  normalize_embeddings: true
+  learning_rate: 1e-3
+  batch_size: 256
+  buffer_size: 100000
+  gamma: 0.99
+  repetition_factor: 2
+  policy_temperature: 0.3
+  iters_per_epoch: 100
+  learn_frequency: 1
+  num_action_samples: 4
+
+  num_epochs_per_round: 10  # Epochs per round (used as num_epochs_per_round in multi_train)
+  trajectories_per_epoch: 10
+  max_episode_steps: 100
+
+  num_rounds: 1  # Number of pruning rounds (1 = no pruning, just normal train)
+  keep_fraction: 0.2  # Fraction of node-node pairs to keep each round
+  exploration_factor: 0.05
+
+  eval_rollouts: 1
+  eval_temperature: 0.3
+  eval_max_steps: 10
+  wandb_enabled: true
+
+  dqn:
+    learning_rate: 3e-4
+    batch_size: 256
+    buffer_size: 100000
+    max_episode_steps: 100
+    num_steps_per_round: 100
+    num_rounds: 1
+    threshold: 0.05
+    beta: 1.0
+    gamma: 0.99
+    exploration_factor: 0.05
+    keep_fraction: 0.2
+    wandb_enabled: true
+
+
+policy:
+  type: multiRL
+  learning_rate: 3.0e-4
+  batch_size: 32
+  n_epochs: 1
+  gamma: 0.99
+  ent_coef: 0.01
+  deterministic: false
+  early_stopping: false
+  early_stopping_patience: 10
+  max_episode_steps: 100
+  episodes_per_scenario: 1
+  training_record_interval: 100
+
+  eval_rollouts: 1
+
+
+evaluation:
+  render: false
+  fast_eval: false
+  num_episodes: 3
+  max_episode_steps: 100
+
+
+
