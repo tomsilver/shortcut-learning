@@ -1163,24 +1163,24 @@ class CRLHeuristic(BaseHeuristic):
         # print("D_gg:", d_gg_sq, "D_sg:", d_sg_sq)
 
 
-        return min(0, (1 / (2 * np.log(self.config.gamma))) * (d_gg_sq - d_sg_sq))
+        return max(0, (1 / (2 * np.log(self.config.gamma))) * (d_gg_sq - d_sg_sq))
 
     def estimate_node_distance(self, source_node: int, target_node: int) -> float:
-        # source_states = self.node_to_states[source_node]
-        # avg = 0
-        # n = 0
-        # for source_state in random.sample(source_states, min(100, len(source_states))):
-        #     avg += self.estimate_distance(source_state, target_node)
-        #     n += 1
-        # return avg / n
+        source_states = self.node_to_states[source_node]
+        avg = 0
+        n = 0
+        for source_state in random.sample(source_states, min(100, len(source_states))):
+            avg += self.estimate_distance(source_state, target_node)
+            n += 1
+        return avg / n
 
-        source_emb = self._encode_node(source_node)
+        # source_emb = self._encode_node(source_node)
 
-        target_emb = self._encode_node(target_node)
+        # target_emb = self._encode_node(target_node)
 
-        # Compute L2 distance in embedding space
-        latent_dist = torch.norm(source_emb - target_emb).item()
-        return  -(1 / (2 * np.log(self.config.gamma))) * latent_dist
+        # # Compute L2 distance in embedding space
+        # latent_dist = torch.norm(source_emb - target_emb).item()
+        # return  -(1 / (2 * np.log(self.config.gamma))) * latent_dist
 
 
 
