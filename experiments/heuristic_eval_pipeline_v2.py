@@ -16,18 +16,21 @@ Configuration:
 - All other parameters are used for heuristic training
 """
 
-from tamp_improv.approaches.improvisational.policies.base import (
-    GoalConditionedTrainingData )
-
+import pickle
 from pathlib import Path
 from typing import Any, Type
-import pickle
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
-from tamp_improv.approaches.improvisational.pipeline_v2 import run_pipeline, PipelineResults
+from tamp_improv.approaches.improvisational.pipeline_v2 import (
+    PipelineResults,
+    run_pipeline,
+)
+from tamp_improv.approaches.improvisational.policies.base import (
+    GoalConditionedTrainingData,
+)
 from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
 from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem
 from tamp_improv.benchmarks.gridworld_fixed import GridworldFixedTAMPSystem
@@ -50,22 +53,21 @@ SYSTEM_CLASSES: dict[str, Type[ImprovisationalTAMPSystem[Any, Any]]] = {
 
 import inspect
 
+
 def filter_kwargs(fn, kwargs):
     sig = inspect.signature(fn)
     valid_params = sig.parameters
 
     # If the function has **kwargs, pass everything
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD
-           for p in valid_params.values()):
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in valid_params.values()):
         return kwargs
 
-    return {
-        k: v for k, v in kwargs.items()
-        if k in valid_params
-    }
+    return {k: v for k, v in kwargs.items() if k in valid_params}
 
-from dataclasses import dataclass, asdict
+
+from dataclasses import asdict, dataclass
 from typing import Any, Optional
+
 
 @dataclass
 class SerializableResults:
@@ -81,6 +83,7 @@ class SerializableResults:
     final_training_data: Optional[GoalConditionedTrainingData] = None
     teleporter_locations: Optional[list] = None
 
+
 def extract_serializable_results(results: PipelineResults) -> SerializableResults:
     teleporter_locations = None
     if results.approach and results.approach.system:
@@ -92,8 +95,14 @@ def extract_serializable_results(results: PipelineResults) -> SerializableResult
         if hasattr(env, "portal_positions") and hasattr(env, "num_states_per_cell"):
             teleporter_locations = []
             for p1, p2 in env.portal_positions:
-                c1 = (int(p1[0] // env.num_states_per_cell), int(p1[1] // env.num_states_per_cell))
-                c2 = (int(p2[0] // env.num_states_per_cell), int(p2[1] // env.num_states_per_cell))
+                c1 = (
+                    int(p1[0] // env.num_states_per_cell),
+                    int(p1[1] // env.num_states_per_cell),
+                )
+                c2 = (
+                    int(p2[0] // env.num_states_per_cell),
+                    int(p2[1] // env.num_states_per_cell),
+                )
                 teleporter_locations.append((c1, c2))
         elif hasattr(env, "portal_positions"):
             teleporter_locations = env.portal_positions
@@ -110,7 +119,6 @@ def extract_serializable_results(results: PipelineResults) -> SerializableResult
         final_training_data=results.pruned_training_data,
         teleporter_locations=teleporter_locations,
     )
-
 
 
 def save_serializable_results(results: PipelineResults, path: Path):
@@ -171,7 +179,7 @@ def main(cfg: DictConfig) -> float:
         heuristic.save(output_dir / "heuristic")
     except:
         print("Heuristic has no save() method, skipping heuristic save.")
-    
+
     policy = results.policy
     try:
         policy.save(output_dir / "policy")
@@ -197,7 +205,9 @@ def main(cfg: DictConfig) -> float:
             # Collection stats
             if results.training_data:
                 f.write("COLLECTION:\n")
-                f.write(f"  Unique shortcuts: {len(results.training_data.unique_shortcuts)}\n")
+                f.write(
+                    f"  Unique shortcuts: {len(results.training_data.unique_shortcuts)}\n"
+                )
                 f.write(
                     f"  State-node pairs: {len(results.training_data.valid_shortcuts)}\n"
                 )
@@ -227,8 +237,6 @@ def main(cfg: DictConfig) -> float:
                     f"  Shortcuts after pruning: {len(results.pruned_training_data.unique_shortcuts)}\n"
                 )
                 f.write("\n")
-
-
 
             # Shortcut quality
             if results.shortcut_quality_results:

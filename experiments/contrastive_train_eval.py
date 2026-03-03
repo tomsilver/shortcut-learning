@@ -16,19 +16,27 @@ from tamp_improv.approaches.improvisational.contrastive_pipeline import (
     train_and_evaluate,
 )
 from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
-from tamp_improv.benchmarks.gridworld_fixed import GridworldFixedTAMPSystem
 from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem
+from tamp_improv.benchmarks.gridworld_fixed import GridworldFixedTAMPSystem
+from tamp_improv.benchmarks.gridworld_continuous import GridworldContinuousTAMPSystem
 from tamp_improv.benchmarks.obstacle2d_graph import GraphObstacle2DTAMPSystem
-
+from tamp_improv.benchmarks.pybullet_cleanup_table import CleanupTableTAMPSystem
+from tamp_improv.benchmarks.pybullet_cluttered_drawer import ClutteredDrawerTAMPSystem
+from tamp_improv.benchmarks.pybullet_obstacle_tower_graph import (
+    GraphObstacleTowerTAMPSystem,
+)
 
 SYSTEM_CLASSES: dict[str, Type[ImprovisationalTAMPSystem[Any, Any]]] = {
     "GraphObstacle2DTAMPSystem": GraphObstacle2DTAMPSystem,
+    "GraphObstacleTowerTAMPSystem": GraphObstacleTowerTAMPSystem,
+    "ClutteredDrawerTAMPSystem": ClutteredDrawerTAMPSystem,
+    "CleanupTableTAMPSystem": CleanupTableTAMPSystem,
     "GridworldTAMPSystem": GridworldTAMPSystem,
     "GridworldFixedTAMPSystem": GridworldFixedTAMPSystem,
+    "GridworldContinuousTAMPSystem": GridworldContinuousTAMPSystem,
 }
 
-
-@hydra.main(version_base=None, config_path="configs", config_name="gridworld_fixed")
+@hydra.main(version_base=None, config_path="configs", config_name="unit_test")
 def main(cfg: DictConfig) -> float:
     """Main function for contrastive pipeline experiment.
 

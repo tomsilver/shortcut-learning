@@ -1,77 +1,113 @@
 seed: 42
 debug: true
 render_mode: null
-eval_heuristic_only: false  # If true, stop pipeline after heuristic evaluation (stage 2.5)
-wandb_enabled: true
+eval_heuristic_only: false
+wandb_enabled: false
 
 env:
   name: GridworldFixedTAMPSystem
   # Gridworld
   num_cells: 5
   num_states_per_cell: 10
-  num_teleporters: 5
-
-  # Blocks
-  n_blocks: 2
-  num_obstacle_blocks: 3
+  num_teleporters: 3
 
 
 collection:
-  num_episodes: 1000
+  num_episodes: 100
   max_steps_per_edge: 100
   planner_id: pyperplan
 
 heuristic:
-  max_shortcuts_per_graph: 10
-
   # Heuristic Parameters
-  type: dqn
+  type: crl_v2
+
+  # Pruning Parameters
+  max_shortcuts_per_graph: 10
+  threshold: 0.05
+
 
   # Rollout Heuristic Parameters
-  num_rollouts_per_node: 10
-  max_steps_per_rollout: 50
-  shortcut_success_threshold: 0.1
-  shortcut_length_factor: 1
+  num_rollouts_per_node: 100
+  max_steps_per_rollout: 100
   action_scale: 1.0
 
-  # CRL Heuristic Parameters
-  hidden_dims: [64, 64]
-  latent_dim: 12
-  normalize_embeddings: false
-  learning_rate: 0.001
-  batch_size: 256
-  buffer_size: 100000
-  gamma: 0.9
-  repetition_factor: 8
-  policy_temperature: 0.5
-  iters_per_epoch: 100
-  learn_frequency: 2
-  num_epochs_per_round: 200 # Epochs per round (used as num_epochs_per_round in multi_train)
-  trajectories_per_epoch: 10
-  max_episode_steps: 200
-  num_rounds: 1  # Number of pruning rounds (1 = no pruning, just normal train)
-  keep_fraction: 0.2  # Fraction of node-node pairs to keep each round
-  exploration_factor: 0.1
-  eval_temperature: 0
-
-  # Evaluate Heuristic
-  eval_rollouts: 100
-  eval_max_steps: 200
-
-  dqn:
-    learning_rate: 3e-4
+  # CRL Heuristic Parameters (both v1 and v2)
+  crl:
+    hidden_dims: [64, 64]
+    latent_dim: 16
+    normalize_embeddings: true
+    learning_rate: 1e-3
     batch_size: 256
     buffer_size: 100000
+    gamma: 0.99
+    repetition_factor: 2
+    policy_temperature: 0.3
+    iters_per_epoch: 100
+    learn_frequency: 1
+    num_action_samples: 4
+
+    num_epochs_per_round: 300  # Epochs per round (used as num_epochs_per_round in multi_train)
+    trajectories_per_epoch: 10
     max_episode_steps: 100
-    num_steps_per_round: 50000
+
+    num_rounds: 1  # Number of pruning rounds (1 = no pruning, just normal train)
+    keep_fraction: 0.2  # Fraction of node-node pairs to keep each round
+    exploration_factor: 0.05
+
+    eval_rollouts: 1
+    eval_temperature: 0.3
+    eval_max_steps: 10
+
+    # CRL V2 specific parameters
+    actor_hidden_dims: [64, 64]
+    goal_encoder_hidden_dims: [32]
+    critic_lr: 1e-3
+    actor_lr: 3e-4
+    max_atom_size: 100
+    grad_clip: 1.0
+
+  # SAC V2 heuristic parameters
+  sac:
+    # Network + optimizer
+    actor_lr: 3e-4
+    critic_lr: 3e-4
+    hidden_dims: [256, 256]
+    actor_hidden_dims: [256, 256]
+    # SAC hyperparameters
+    batch_size: 256
+    buffer_size: 100000
+    gamma: 0.99
+    tau: 0.005
+    target_update_interval: 1
+    auto_entropy: true
+    init_temperature: 0.2
+    # HER
+    her_n_sampled_goal: 4
+    her_strategy: future
+    # Training loop
+    trajectories_per_epoch: 10
+    num_epochs_per_round: 20
+    max_episode_steps: 100
+    learn_frequency: 1
+    iters_per_epoch: 50
+    grad_clip: 1.0
+    log_alpha_min: -5.0
+    # Multi-round
     num_rounds: 1
+    keep_fraction: 0.2
+    exploration_factor: 0.05
+    # Shortcut scoring
     threshold: 0.05
     beta: 1.0
-    gamma: 0.9
-    exploration_factor: 0.05
-    keep_fraction: 0.2
+    sampling_method: uniform
+    ucb_beta: 1.0
+    gain_method: exact
+    dist_scale: 1.0
+    dist_quantile: 1.0
+    auto_dist_scale: false
+    residualize: false
+    max_atom_size: 50
 
-  
 
 policy:
   type: multiRL
@@ -80,20 +116,20 @@ policy:
   n_epochs: 1
   gamma: 0.99
   ent_coef: 0.01
-  deterministic: true
+  deterministic: false
   early_stopping: false
   early_stopping_patience: 10
   max_episode_steps: 100
-  episodes_per_scenario: 10
+  episodes_per_scenario: 1
   training_record_interval: 100
 
-  eval_rollouts: 100
+  eval_rollouts: 1
 
 
 evaluation:
   render: false
   fast_eval: false
-  num_episodes: 100
+  num_episodes: 50
   max_episode_steps: 100
 
 

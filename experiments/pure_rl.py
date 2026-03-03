@@ -9,13 +9,13 @@ from tamp_improv.approaches.improvisational.training import (
     TrainingConfig,
     train_and_evaluate_rl_baseline,
 )
+from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem
 from tamp_improv.benchmarks.obstacle2d import Obstacle2DTAMPSystem
 from tamp_improv.benchmarks.pybullet_cleanup_table import CleanupTableTAMPSystem
 from tamp_improv.benchmarks.pybullet_cluttered_drawer import ClutteredDrawerTAMPSystem
 from tamp_improv.benchmarks.pybullet_obstacle_tower_graph import (
     GraphObstacleTowerTAMPSystem,
 )
-from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem
 
 
 def train_pure_rl_gridworld(
@@ -28,7 +28,9 @@ def train_pure_rl_gridworld(
 ):
     """Train Pure RL (PPO) baseline on Gridworld."""
     print("\n=== Training Pure RL (PPO) on Gridworld ===")
-    print(f"Grid Configuration: {num_cells}x{num_cells} cells, {num_states_per_cell}x{num_states_per_cell} states per cell")
+    print(
+        f"Grid Configuration: {num_cells}x{num_cells} cells, {num_states_per_cell}x{num_states_per_cell} states per cell"
+    )
 
     config = TrainingConfig(
         seed=seed,
@@ -74,7 +76,11 @@ def train_pure_rl_gridworld(
     print(f"Success Rate: {metrics.success_rate:.2%}")
     print(f"Average Episode Length: {metrics.avg_episode_length:.2f}")
 
-    results_file = Path(save_dir) / f"GridworldTAMPSystem_{num_cells}x{num_cells}_PureRL_PPO" / "results.txt"
+    results_file = (
+        Path(save_dir)
+        / f"GridworldTAMPSystem_{num_cells}x{num_cells}_PureRL_PPO"
+        / "results.txt"
+    )
     results_file.parent.mkdir(parents=True, exist_ok=True)
     with open(results_file, "w", encoding="utf-8") as f:
         f.write("Environment: Gridworld\n")
@@ -86,6 +92,7 @@ def train_pure_rl_gridworld(
         f.write(f"avg_episode_length: {metrics.avg_episode_length:.2f}\n")
 
     return metrics
+
 
 def train_pure_rl_obstacle2d(
     seed: int = 42,
@@ -219,7 +226,13 @@ if __name__ == "__main__":
         "--env",
         type=str,
         default="obstacle2d",
-        choices=["obstacle2d", "gridworld", "obstacle_tower", "cluttered_drawer", "cleanup_table"],
+        choices=[
+            "obstacle2d",
+            "gridworld",
+            "obstacle_tower",
+            "cluttered_drawer",
+            "cleanup_table",
+        ],
         help="Environment to train on",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed")

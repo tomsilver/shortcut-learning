@@ -16,21 +16,25 @@ Configuration:
 - All other parameters are used for heuristic training
 """
 
-from tamp_improv.approaches.improvisational.policies.base import (
-    GoalConditionedTrainingData )
-
+import pickle
 from pathlib import Path
 from typing import Any, Type
-import pickle
 
 import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
-from tamp_improv.approaches.improvisational.pipeline_v2 import run_pipeline, PipelineResults
+from tamp_improv.approaches.improvisational.pipeline_v2 import (
+    PipelineResults,
+    run_pipeline,
+)
+from tamp_improv.approaches.improvisational.policies.base import (  # noqa: F401
+    GoalConditionedTrainingData,
+)
 from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
 from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem
 from tamp_improv.benchmarks.gridworld_fixed import GridworldFixedTAMPSystem
+from tamp_improv.benchmarks.gridworld_continuous import GridworldContinuousTAMPSystem
 from tamp_improv.benchmarks.obstacle2d_graph import GraphObstacle2DTAMPSystem
 from tamp_improv.benchmarks.pybullet_cleanup_table import CleanupTableTAMPSystem
 from tamp_improv.benchmarks.pybullet_cluttered_drawer import ClutteredDrawerTAMPSystem
@@ -45,80 +49,28 @@ SYSTEM_CLASSES: dict[str, Type[ImprovisationalTAMPSystem[Any, Any]]] = {
     "CleanupTableTAMPSystem": CleanupTableTAMPSystem,
     "GridworldTAMPSystem": GridworldTAMPSystem,
     "GridworldFixedTAMPSystem": GridworldFixedTAMPSystem,
+    "GridworldContinuousTAMPSystem": GridworldContinuousTAMPSystem,
 }
 
 
 import inspect
+
 
 def filter_kwargs(fn, kwargs):
     sig = inspect.signature(fn)
     valid_params = sig.parameters
 
     # If the function has **kwargs, pass everything
-    if any(p.kind == inspect.Parameter.VAR_KEYWORD
-           for p in valid_params.values()):
+    if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in valid_params.values()):
         return kwargs
 
-    return {
-        k: v for k, v in kwargs.items()
-        if k in valid_params
-    }
-
-from dataclasses import dataclass, asdict
-from typing import Any, Optional
-
-@dataclass
-class SerializableResults:
-    graph_distances: Optional[dict[tuple[int, int], float]] = None
-    heuristic_training_history: Optional[dict[str, Any]] = None
-    heuristic_quality_results: Optional[dict[str, Any]] = None
-    shortcut_quality_results: Optional[dict[str, Any]] = None
-    times: Optional[dict[str, float]] = None
-    evaluation_results: Optional[Any] = None  # Metrics is probably pickleable
-
-    training_data: Optional[GoalConditionedTrainingData] = None
-    pruned_training_data: Optional[GoalConditionedTrainingData] = None
-    final_training_data: Optional[GoalConditionedTrainingData] = None
-    teleporter_locations: Optional[list] = None
-    successful_shortcut_paths: Optional[list[list[Any]]] = None
-
-def extract_serializable_results(results: PipelineResults) -> SerializableResults:
-    teleporter_locations = None
-    if results.approach and results.approach.system:
-        # Try to find portal_positions in the environment
-        env = results.approach.system.env
-        # Unwrap just in case
-        if hasattr(env, "unwrapped"):
-            env = env.unwrapped
-        if hasattr(env, "portal_positions") and hasattr(env, "num_states_per_cell"):
-            teleporter_locations = []
-            for p1, p2 in env.portal_positions:
-                c1 = (int(p1[0] // env.num_states_per_cell), int(p1[1] // env.num_states_per_cell))
-                c2 = (int(p2[0] // env.num_states_per_cell), int(p2[1] // env.num_states_per_cell))
-                teleporter_locations.append((c1, c2))
-        elif hasattr(env, "portal_positions"):
-            teleporter_locations = env.portal_positions
-
-    return SerializableResults(
-        graph_distances=results.graph_distances,
-        heuristic_training_history=results.heuristic_training_history,
-        heuristic_quality_results=results.heuristic_quality_results,
-        shortcut_quality_results=results.shortcut_quality_results,
-        times=results.times,
-        evaluation_results=results.evaluation_results,
-        training_data=results.training_data,
-        pruned_training_data=results.pruned_training_data,
-        final_training_data=results.pruned_training_data,
-        teleporter_locations=teleporter_locations,
-        successful_shortcut_paths=results.shortcut_quality_results.get('successful_shortcut_paths') if results.shortcut_quality_results else None,
-    )
+    return {k: v for k, v in kwargs.items() if k in valid_params}
 
 
-
-def save_serializable_results(results: PipelineResults, path: Path):
-    serializable = extract_serializable_results(results)
+def save_results(results: PipelineResults, path: Path):
+    """Save PipelineResults directly — it's already fully serializable."""
     with open(path / "results.pkl", "wb") as f:
-        pickle.dump(serializable, f)
+        pickle.dump(results, f)
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="unit_test")
@@ -141,6 +93,7 @@ def main(cfg: DictConfig) -> float:
         "num_obstacle_blocks": cfg.env.num_obstacle_blocks,
         "num_cells": cfg.env.num_cells,
         "num_states_per_cell": cfg.env.num_states_per_cell,
+        "grid_size": cfg.env.num_states_per_cell * cfg.env.num_cells,
         "num_teleporters": cfg.env.num_teleporters,
     }
 
@@ -166,36 +119,21 @@ def main(cfg: DictConfig) -> float:
         cfg=cfg,
     )
 
-    
-
-    # Extract metrics
-    metrics = results.evaluation_results
-    if metrics is None:
+    # Print final metrics
+    if results.avg_success_rate is None:
         raise RuntimeError("Pipeline returned no evaluation metrics!")
 
     print("\n" + "=" * 80)
     print("Final Results:")
     print("=" * 80)
-    print(f"Success Rate: {metrics.success_rate:.2%}")
-    print(f"Average Steps: {metrics.avg_episode_length:.2f}")
-    print(f"Average Reward: {metrics.avg_reward:.3f}")
+    print(f"Success Rate: {results.avg_success_rate:.2%}")
+    print(f"Average Steps: {results.avg_steps:.2f}")
+    print(f"Average Reward: {results.avg_reward:.3f}")
     print("=" * 80)
 
     print("Times:", results.times)
 
     OmegaConf.save(cfg, output_dir / "config.yaml")
-
-    heuristic = results.heuristic
-    try:
-        heuristic.save(output_dir / "heuristic")
-    except:
-        print("Heuristic has no save() method, skipping heuristic save.")
-    
-    policy = results.policy
-    try:
-        policy.save(output_dir / "policy")
-    except:
-        print("Policy has no save() method, skipping policy save.")
 
     # Save results
     results_file = output_dir / "results.txt"
@@ -204,9 +142,9 @@ def main(cfg: DictConfig) -> float:
         f.write(f"seed: {cfg.seed}\n")
         f.write(f"heuristic_type: {cfg.heuristic.type}\n")
         f.write(f"policy_type: {cfg.policy.type}\n")
-        f.write(f"success_rate: {metrics.success_rate}\n")
-        f.write(f"avg_steps: {metrics.avg_episode_length}\n")
-        f.write(f"avg_reward: {metrics.avg_reward}\n")
+        f.write(f"success_rate: {results.avg_success_rate}\n")
+        f.write(f"avg_steps: {results.avg_steps}\n")
+        f.write(f"avg_reward: {results.avg_reward}\n")
 
     # Save detailed results if debug mode
     if cfg.debug:
@@ -217,62 +155,33 @@ def main(cfg: DictConfig) -> float:
             f.write("=" * 80 + "\n\n")
 
             # Collection stats
-            if results.training_data:
+            if results.unique_shortcuts is not None:
                 f.write("COLLECTION:\n")
-                f.write(f"  Unique shortcuts: {len(results.training_data.unique_shortcuts)}\n")
                 f.write(
-                    f"  State-node pairs: {len(results.training_data.valid_shortcuts)}\n"
+                    f"  Unique shortcuts: {len(results.unique_shortcuts)}\n"
                 )
                 f.write(
-                    f"  Graph nodes: {len(results.training_data.graph.nodes) if results.training_data.graph else 0}\n"
-                )
-                f.write("\n")
-
-            # Heuristic quality
-            if results.heuristic_quality_results:
-                f.write("HEURISTIC QUALITY:\n")
-                f.write(
-                    f"  Avg estimated distance: {results.heuristic_quality_results['avg_estimated_distance']:.2f}\n"
-                )
-                f.write(
-                    f"  Avg graph distance: {results.heuristic_quality_results['avg_graph_distance']:.2f}\n"
-                )
-                f.write(
-                    f"  Avg absolute error: {results.heuristic_quality_results['avg_absolute_error']:.2f}\n"
+                    f"  Nodes: {len(results.node_atoms) if results.node_atoms else 0}\n"
                 )
                 f.write("\n")
 
             # Pruning stats
-            if results.pruned_training_data:
+            if results.pruned_shortcuts is not None:
                 f.write("PRUNING:\n")
                 f.write(
-                    f"  Shortcuts after pruning: {len(results.pruned_training_data.unique_shortcuts)}\n"
-                )
-                f.write("\n")
-
-
-
-            # Shortcut quality
-            if results.shortcut_quality_results:
-                # print(results.shortcut_quality_resul)
-                f.write("SHORTCUT QUALITY:\n")
-                f.write(
-                    f"  Avg success rate: {(results.shortcut_quality_results['avg_success_rate']):.2%}\n"
-                )
-                f.write(
-                    f"  Avg steps: {results.shortcut_quality_results['avg_steps']:.1f}\n"
+                    f"  Shortcuts after pruning: {len(results.pruned_shortcuts)}\n"
                 )
                 f.write("\n")
 
             # Evaluation
             f.write("EVALUATION:\n")
-            f.write(f"  Success rate: {metrics.success_rate:.2%}\n")
-            f.write(f"  Avg steps: {metrics.avg_episode_length:.2f}\n")
-            f.write(f"  Avg reward: {metrics.avg_reward:.3f}s\n")
+            f.write(f"  Success rate: {results.avg_success_rate:.2%}\n")
+            f.write(f"  Avg steps: {results.avg_steps:.2f}\n")
+            f.write(f"  Avg reward: {results.avg_reward:.3f}\n")
     print(output_dir)
 
-    save_serializable_results(results, output_dir)
-    return metrics.success_rate
+    save_results(results, output_dir)
+    return results.avg_success_rate
 
 
 if __name__ == "__main__":
