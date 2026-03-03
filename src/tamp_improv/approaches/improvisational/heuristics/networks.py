@@ -1,0 +1,382 @@
+"""Shared neural network modules for contrastive heuristics (CRL v2, CMD v2).
+
+All actor, encoder, and distance-network classes live here so that
+heuristic_crl_v2 and heuristic_cmd_v2 can share them without duplication.
+Any heuristic that exposes ``sa_encoder`` / ``g_encoder`` attributes (with the
+interfaces defined here) is automatically compatible with
+``get_latent_embeddings()`` in the pipeline.
+"""
+
+from typing import Callable
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# ---------------------------------------------------------------------------
+# Building blocks
+# ---------------------------------------------------------------------------
+
+
+class MLP(nn.Module):
+    """Simple feedforward MLP."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        hidden_dims: list[int] | None = None,
+        activation: Callable[[torch.Tensor], torch.Tensor] = nn.ReLU(),
+    ):
+        super().__init__()
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
+
+        layers = []
+        prev_dim = input_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(activation)
+            prev_dim = h
+        layers.append(nn.Linear(prev_dim, output_dim))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.network(x)
+
+
+# ---------------------------------------------------------------------------
+# Encoders (shared by CRL v2 and CMD v2)
+# ---------------------------------------------------------------------------
+
+
+class StateActionEncoder(nn.Module):
+    """Encodes (state, action) pairs to latent embeddings.
+
+    Takes state and action as *separate* tensors (concatenated internally),
+    so downstream code can call ``sa_encoder(states, actions)``.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        latent_dim: int,
+        hidden_dims: list[int] | None = None,
+    ):
+        super().__init__()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.latent_dim = latent_dim
+
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
+
+        layers = []
+        prev_dim = state_dim + action_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(nn.ReLU())
+            prev_dim = h
+        layers.append(nn.Linear(prev_dim, latent_dim))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Encode (state, action) pairs.
+
+        Args:
+            states:  (batch, state_dim)
+            actions: (batch, action_dim)
+
+        Returns:
+            (batch, latent_dim)
+        """
+        return self.network(torch.cat([states, actions], dim=-1))
+
+
+class GoalEncoder(nn.Module):
+    """Encodes goal atom vectors (multi-hot) to latent embeddings."""
+
+    def __init__(
+        self,
+        atom_dim: int,
+        latent_dim: int,
+        hidden_dims: list[int] | None = None,
+    ):
+        super().__init__()
+        self.atom_dim = atom_dim
+        self.latent_dim = latent_dim
+
+        if hidden_dims is None:
+            hidden_dims = [32]
+
+        layers = []
+        prev_dim = atom_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(nn.ReLU())
+            prev_dim = h
+        layers.append(nn.Linear(prev_dim, latent_dim))
+        self.network = nn.Sequential(*layers)
+
+    def forward(self, atom_vectors: torch.Tensor) -> torch.Tensor:
+        """Encode atom vectors.
+
+        Args:
+            atom_vectors: (batch, atom_dim) multi-hot
+
+        Returns:
+            (batch, latent_dim)
+        """
+        return self.network(atom_vectors)
+
+
+# ---------------------------------------------------------------------------
+# CMD v2 distance / cost networks
+# ---------------------------------------------------------------------------
+
+
+class MRN(nn.Module):
+    """Metric Residual Network for quasi-metric distances.
+
+    Combines symmetric and asymmetric components to learn d(sa, g) that
+    respects the triangle inequality.  Returns *negative* distance (energy).
+    """
+
+    def __init__(
+        self,
+        sa_dim: int,
+        g_dim: int,
+        sym_dim: int = 64,
+        asym_dim: int = 16,
+        hidden_dims: list[int] | None = None,
+    ):
+        super().__init__()
+        self.sa_sym = MLP(sa_dim, sym_dim, hidden_dims)
+        self.g_sym = MLP(g_dim, sym_dim, hidden_dims)
+        self.sa_asym = MLP(sa_dim, asym_dim, hidden_dims)
+        self.g_asym = MLP(g_dim, asym_dim, hidden_dims)
+
+    def forward(self, sa: torch.Tensor, g: torch.Tensor) -> torch.Tensor:
+        """Compute negative distance -d(sa, g).
+
+        Args:
+            sa: (batch, sa_dim)
+            g:  (batch, g_dim)
+
+        Returns:
+            (batch, 1) negative distances
+        """
+        sa_enc = self.sa_sym(sa)
+        g_enc = self.g_sym(g)
+        dist_sym = (sa_enc - g_enc).pow(2).mean(-1, keepdim=True)
+
+        sa_asym = self.sa_asym(sa)
+        g_asym = self.g_asym(g)
+        res = F.relu(sa_asym - g_asym)
+        dist_asym = (F.softmax(res, -1) * res).sum(-1, keepdim=True)
+
+        return -(dist_sym + dist_asym)
+
+
+class CostNet(nn.Module):
+    """Maps a goal encoding to a scalar cost c(g)."""
+
+    def __init__(self, g_dim: int):
+        super().__init__()
+        self.scalar_net = nn.Sequential(
+            nn.Linear(g_dim, g_dim // 2),
+            nn.ReLU(),
+            nn.Linear(g_dim // 2, g_dim // 4),
+            nn.ReLU(),
+            nn.Linear(g_dim // 4, 1),
+        )
+
+    def forward(self, g: torch.Tensor) -> torch.Tensor:
+        return self.scalar_net(g)
+
+
+# ---------------------------------------------------------------------------
+# Actors (shared by CRL v2 and CMD v2)
+# ---------------------------------------------------------------------------
+
+
+class DiscreteActor(nn.Module):
+    """Actor for discrete action spaces (categorical over actions)."""
+
+    def __init__(
+        self,
+        state_dim: int,
+        num_actions: int,
+        atom_dim: int,
+        hidden_dims: list[int] | None = None,
+    ):
+        super().__init__()
+        self.state_dim = state_dim
+        self.num_actions = num_actions
+        self.atom_dim = atom_dim
+
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
+
+        layers = []
+        prev_dim = state_dim + atom_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(nn.ReLU())
+            prev_dim = h
+        layers.append(nn.Linear(prev_dim, num_actions))
+        self.network = nn.Sequential(*layers)
+
+    def forward(
+        self, states: torch.Tensor, goal_atom_vectors: torch.Tensor
+    ) -> torch.Tensor:
+        return self.network(torch.cat([states, goal_atom_vectors], dim=-1))
+
+    def sample(
+        self, states: torch.Tensor, goal_atom_vectors: torch.Tensor
+    ) -> torch.Tensor:
+        dist = torch.distributions.Categorical(logits=self.forward(states, goal_atom_vectors))
+        return dist.sample()
+
+    def get_log_prob(
+        self,
+        states: torch.Tensor,
+        goal_atom_vectors: torch.Tensor,
+        actions: torch.Tensor,
+    ) -> torch.Tensor:
+        dist = torch.distributions.Categorical(logits=self.forward(states, goal_atom_vectors))
+        return dist.log_prob(actions)
+
+
+class ContinuousActor(nn.Module):
+    """Actor for continuous action spaces (squashed Gaussian)."""
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        atom_dim: int,
+        hidden_dims: list[int] | None = None,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
+    ):
+        super().__init__()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.atom_dim = atom_dim
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
+
+        layers = []
+        prev_dim = state_dim + atom_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(nn.ReLU())
+            prev_dim = h
+        self.trunk = nn.Sequential(*layers)
+        self.mean_head = nn.Linear(prev_dim, action_dim)
+        self.log_std_head = nn.Linear(prev_dim, action_dim)
+
+    def forward(
+        self, states: torch.Tensor, goal_atom_vectors: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        features = self.trunk(torch.cat([states, goal_atom_vectors], dim=-1))
+        mean = self.mean_head(features)
+        log_std = torch.clamp(self.log_std_head(features), self.log_std_min, self.log_std_max)
+        return mean, log_std
+
+    def sample(
+        self,
+        states: torch.Tensor,
+        goal_atom_vectors: torch.Tensor,
+        deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        mean, log_std = self.forward(states, goal_atom_vectors)
+        if deterministic:
+            return torch.tanh(mean), None
+        std = log_std.exp()
+        x_t = torch.distributions.Normal(mean, std).rsample()
+        action = torch.tanh(x_t)
+        log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
+        log_prob -= torch.log(1 - action.pow(2) + 1e-6)
+        return action, log_prob.sum(dim=-1)
+
+
+class ResidualContinuousActor(nn.Module):
+    """Residual actor: output = base_action + pi_1(base_action) + pi_2(state, goal).
+
+    pi_1 is zero-initialized so training starts at the pure base-skill policy.
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        atom_dim: int,
+        hidden_dims: list[int] | None = None,
+        log_std_min: float = -20,
+        log_std_max: float = 2,
+    ):
+        super().__init__()
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.atom_dim = atom_dim
+        self.log_std_min = log_std_min
+        self.log_std_max = log_std_max
+
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
+
+        # pi_1: zero-initialized linear on base_action
+        self.pi1 = nn.Linear(action_dim, action_dim)
+        nn.init.zeros_(self.pi1.weight)
+        nn.init.zeros_(self.pi1.bias)
+
+        # pi_2: standard squashed-Gaussian trunk
+        layers = []
+        prev_dim = state_dim + atom_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(nn.ReLU())
+            prev_dim = h
+        self.trunk = nn.Sequential(*layers)
+        self.mean_head = nn.Linear(prev_dim, action_dim)
+        self.log_std_head = nn.Linear(prev_dim, action_dim)
+
+    def forward(
+        self, states: torch.Tensor, goal_atom_vectors: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        features = self.trunk(torch.cat([states, goal_atom_vectors], dim=-1))
+        mean = self.mean_head(features)
+        log_std = torch.clamp(self.log_std_head(features), self.log_std_min, self.log_std_max)
+        return mean, log_std
+
+    def sample(
+        self,
+        states: torch.Tensor,
+        goal_atom_vectors: torch.Tensor,
+        base_actions: torch.Tensor | None = None,
+        deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if base_actions is None:
+            base_actions = torch.zeros(states.shape[0], self.action_dim, device=states.device)
+
+        pi1_correction = self.pi1(base_actions)
+        mean, log_std = self.forward(states, goal_atom_vectors)
+
+        if deterministic:
+            return base_actions + pi1_correction + torch.tanh(mean), None
+
+        std = log_std.exp()
+        x_t = torch.distributions.Normal(mean, std).rsample()
+        pi2_action = torch.tanh(x_t)
+        action = base_actions + pi1_correction + pi2_action
+
+        log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
+        log_prob -= torch.log(1 - pi2_action.pow(2) + 1e-6)
+        return action, log_prob.sum(dim=-1)

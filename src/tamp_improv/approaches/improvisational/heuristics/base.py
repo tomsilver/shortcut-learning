@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from tamp_improv.approaches.improvisational.policies.base import GoalConditionedTrainingData, ObsType
+from tamp_improv.approaches.improvisational.policies.base import (
+    GoalConditionedTrainingData,
+    ObsType,
+)
 
 
 class BaseHeuristic(ABC):
@@ -76,9 +79,11 @@ class BaseHeuristic(ABC):
             Estimated distance (in steps)
         """
         pass
-
+    
     @abstractmethod
-    def prune(self, max_shortcuts: int | None, **kwargs: Any) -> 'GoalConditionedTrainingData':
+    def prune(
+        self, max_shortcuts: int | None, **kwargs: Any
+    ) -> "GoalConditionedTrainingData":
         """Prune training data to promising shortcuts.
 
         Uses estimate_node_distance to evaluate shortcuts and filters
@@ -92,6 +97,37 @@ class BaseHeuristic(ABC):
         """
         pass
 
+    @abstractmethod
+    def prune_by_success(
+        self, success_threshold: float, max_steps: int, **kwargs: Any
+    ) -> "GoalConditionedTrainingData":
+        """Prune training data to all successful-looking shortcuts.
+
+        Uses estimate_node_distance to evaluate shortcuts and filters
+        to those worth training on.
+
+        Args:
+            success_threshold: Minimum success rate threshold for a shortcut to be included
+            max_steps: Maximum number of steps to consider for success rate calculation
+            **kwargs: Additional pruning parameters (threshold, keep_fraction, etc.)
+
+        Returns:
+            New GoalConditionedTrainingData with filtered shortcuts
+        """
+        pass
+
+    @abstractmethod
+    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
+        """Get action to move from state toward target node.
+
+        Args:
+            obs: Current observation/state
+            target_node: Target node ID
+        Returns:
+            Action to take toward target node
+        """
+        pass
+
     def save(self, path: str) -> None:
         """Save heuristic to disk (optional, for learned heuristics)."""
         raise NotImplementedError("This heuristic does not support saving")
@@ -102,10 +138,10 @@ class BaseHeuristic(ABC):
 
 
 def random_selection(
-    training_data: 'GoalConditionedTrainingData',
+    training_data: "GoalConditionedTrainingData",
     max_shortcuts: int,
     rng: np.random.Generator,
-) -> 'GoalConditionedTrainingData':
+) -> "GoalConditionedTrainingData":
     """Stage 3.5: Randomly select up to max_shortcuts from pruned data.
 
     If max_shortcuts is 0, returns empty training data (pure planning mode).
@@ -149,7 +185,9 @@ def random_selection(
         )
 
     if max_shortcuts >= num_shortcuts:
-        print(f"max_shortcuts_per_graph ({max_shortcuts}) >= num shortcuts ({num_shortcuts}): Keeping all shortcuts")
+        print(
+            f"max_shortcuts_per_graph ({max_shortcuts}) >= num shortcuts ({num_shortcuts}): Keeping all shortcuts"
+        )
         return training_data
 
     # Random selection
@@ -157,11 +195,11 @@ def random_selection(
 
     # Randomly select unique shortcuts (node-node pairs)
     print(training_data.unique_shortcuts)
-    sample = (rng.choice(training_data.unique_shortcuts, size=max_shortcuts, replace=False).tolist())
+    sample = rng.choice(
+        training_data.unique_shortcuts, size=max_shortcuts, replace=False
+    ).tolist()
 
-    selected_unique_shortcuts = set(
-        (x, y) for x, y in sample
-    )
+    selected_unique_shortcuts = set((x, y) for x, y in sample)
 
     # Filter valid_shortcuts to keep only those matching selected unique shortcuts
     # valid_shortcuts has one entry per state-node pair, so we filter by node pairs

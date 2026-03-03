@@ -30,7 +30,9 @@ class PlanningGraphEdge:
     source: PlanningGraphNode
     target: PlanningGraphNode
     operator: GroundOperator | None = None
-    cost: float = float("inf")
+    cost: float | None = None
+    max_cost: float | None = None
+    success_rate: float | None = None
     is_shortcut: bool = False
 
     # Store path-dependent costs: (path, source_node_id) -> cost
@@ -52,7 +54,7 @@ class PlanningGraphEdge:
     def get_cost(self, path: tuple[int, ...]) -> float:
         """Get the cost of this edge when coming via the specified path."""
         if not self.costs:
-            return self.cost
+            return self.max_cost
 
         # Try to find exact path match
         for (p, _), cost in self.costs.items():
@@ -60,12 +62,14 @@ class PlanningGraphEdge:
                 return cost
 
         # If no exact match, look for a path ending with the same node
-        for (p, node_id), cost in self.costs.items():
-            if p and p[-1] == self.source.id and node_id == self.source.id:
-                return cost
+        # for (p, node_id), cost in self.costs.items():
+        #     if p and p[-1] == self.source.id and node_id == self.source.id:
+        #         return cost
 
         # Default to the minimum cost if no matching path is found
-        return self.cost
+        # return self.cost
+
+        return self.max_cost
 
 
 class PlanningGraph:
@@ -108,10 +112,14 @@ class PlanningGraph:
         target: PlanningGraphNode,
         operator: GroundOperator | None = None,
         cost: float = float("inf"),
+        max_cost: float = float("inf"),
         is_shortcut: bool = False,
     ) -> PlanningGraphEdge:
         """Add an edge to the graph."""
-        edge = PlanningGraphEdge(source, target, operator, cost, is_shortcut)
+        print("Is it shortcut?", is_shortcut)
+        edge = PlanningGraphEdge(source=source, target=target, operator=operator, 
+                                 max_cost=max_cost, cost=cost, is_shortcut=is_shortcut)
+        print("New edge! From node", edge.source.id, "to node", edge.target.id, "with operator", edge.operator.name, "is shortcut", edge.is_shortcut)
         self.edges.append(edge)
         self.node_to_incoming_edges[edge.target].append(edge)
         self.node_to_outgoing_edges[edge.source].append(edge)
@@ -151,7 +159,10 @@ class PlanningGraph:
 
         reached_goal_nodes = set()
         max_path_length = len(self.nodes) * 2
+
+        # print("Edges:", self.edges)
         while queue:
+            # print("Queue:", (queue))
             current_dist, _, current_state = heapq.heappop(queue)
             current_node, current_path = current_state
             if len(current_path) > max_path_length:
@@ -168,7 +179,11 @@ class PlanningGraph:
                     break
 
             for edge in [e for e in self.edges if e.source == current_node]:
+                # print("Edge:", edge)
                 edge_cost = edge.get_cost(current_path)
+
+                # print("Cost:", edge_cost)
+
                 if edge_cost == float("inf"):
                     continue
 
@@ -185,8 +200,9 @@ class PlanningGraph:
                     distances[new_state] = float(new_dist)
                     previous[new_state] = (current_state, edge)
                     heapq.heappush(queue, (new_dist, next(counter), new_state))
-        print("Start node:", init_atoms)
-        print("Goal nodes:", goal_nodes)
+        # print("Start node:", init_atoms)
+        # print("Goal nodes:", goal_nodes)
+        # print("Distances:", distances)
         best_goal_states = {}
         for goal_node in goal_nodes:
             goal_states = [(n, p) for (n, p) in distances if n == goal_node]
@@ -224,7 +240,7 @@ class PlanningGraph:
                     path_str = "-".join(str(node_id) for node_id in p) if p else "start"
                     cost_details.append(f"via {path_str}: {cost}")
                 path_details.append(
-                    f"{edge.source.id}->{edge.target.id} [{', '.join(cost_details)}]"
+                    f"{edge.source.id}->{edge.target.id} (is shortcut? {edge.is_shortcut}): [{', '.join(cost_details)}]"
                 )
             else:
                 path_details.append(

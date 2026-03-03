@@ -43,7 +43,6 @@ from tamp_improv.benchmarks.base import (
 )
 from tamp_improv.benchmarks.wrappers import ImprovWrapper
 
-
 # ============================================================================
 # Gridworld Gymnasium Environment
 # ============================================================================
@@ -113,7 +112,9 @@ class GridworldEnv(gym.Env):
         non_goal_cells = [c for c in all_cells if c != goal_cell]
 
         # Randomly select start cells for portals (without replacement)
-        start_cells = init_rng.choice(len(non_goal_cells), size=num_teleporters, replace=False)
+        start_cells = init_rng.choice(
+            len(non_goal_cells), size=num_teleporters, replace=False
+        )
 
         for idx in start_cells:
             start_cell = non_goal_cells[idx]
@@ -152,7 +153,9 @@ class GridworldEnv(gym.Env):
             # Start portal: random position within start_cell
             start_cell_min = np.array(start_cell) * cell_size
             start_cell_max = start_cell_min + cell_size
-            start_portal = self.np_random.integers(start_cell_min, start_cell_max, size=2)
+            start_portal = self.np_random.integers(
+                start_cell_min, start_cell_max, size=2
+            )
 
             # End portal: random position within end_cell (goal cell)
             end_cell_min = np.array(end_cell) * cell_size
@@ -163,17 +166,19 @@ class GridworldEnv(gym.Env):
             max_attempts = 100
             attempts = 0
             while attempts < max_attempts and (
-                np.array_equal(start_portal, self.robot_pos) or
-                np.array_equal(start_portal, self.goal_pos)
+                np.array_equal(start_portal, self.robot_pos)
+                or np.array_equal(start_portal, self.goal_pos)
             ):
-                start_portal = self.np_random.integers(start_cell_min, start_cell_max, size=2)
+                start_portal = self.np_random.integers(
+                    start_cell_min, start_cell_max, size=2
+                )
                 attempts += 1
 
             attempts = 0
             while attempts < max_attempts and (
-                np.array_equal(end_portal, self.robot_pos) or
-                np.array_equal(end_portal, self.goal_pos) or
-                np.array_equal(end_portal, start_portal)
+                np.array_equal(end_portal, self.robot_pos)
+                or np.array_equal(end_portal, self.goal_pos)
+                or np.array_equal(end_portal, start_portal)
             ):
                 end_portal = self.np_random.integers(end_cell_min, end_cell_max, size=2)
                 attempts += 1
@@ -202,7 +207,9 @@ class GridworldEnv(gym.Env):
         # Node format: [type, x, y, cell_x, cell_y, id/pair_id]
 
         robot_node = state.nodes[0]  # type=0
-        self.robot_pos = np.array([int(robot_node[1]), int(robot_node[2])], dtype=np.int32)
+        self.robot_pos = np.array(
+            [int(robot_node[1]), int(robot_node[2])], dtype=np.int32
+        )
 
         goal_node = state.nodes[1]  # type=1
         self.goal_pos = np.array([int(goal_node[1]), int(goal_node[2])], dtype=np.int32)
@@ -217,8 +224,12 @@ class GridworldEnv(gym.Env):
                 portal1_node = portal_nodes[i]
                 portal2_node = portal_nodes[i + 1]
 
-                portal1 = np.array([int(portal1_node[1]), int(portal1_node[2])], dtype=np.int32)
-                portal2 = np.array([int(portal2_node[1]), int(portal2_node[2])], dtype=np.int32)
+                portal1 = np.array(
+                    [int(portal1_node[1]), int(portal1_node[2])], dtype=np.int32
+                )
+                portal2 = np.array(
+                    [int(portal2_node[1]), int(portal2_node[2])], dtype=np.int32
+                )
 
                 self.portals.append((portal1, portal2))
 
@@ -287,50 +298,62 @@ class GridworldEnv(gym.Env):
 
         # Robot node: [type=0, x, y, cell_x, cell_y, id=0]
         robot_cell = self.robot_pos // self.num_states_per_cell
-        robot_node = np.array([
-            0,  # type
-            float(self.robot_pos[0]),
-            float(self.robot_pos[1]),
-            float(robot_cell[0]),
-            float(robot_cell[1]),
-            0,  # id
-        ], dtype=np.float32)
+        robot_node = np.array(
+            [
+                0,  # type
+                float(self.robot_pos[0]),
+                float(self.robot_pos[1]),
+                float(robot_cell[0]),
+                float(robot_cell[1]),
+                0,  # id
+            ],
+            dtype=np.float32,
+        )
         nodes.append(robot_node)
 
         # Goal node: [type=1, x, y, cell_x, cell_y, id=1]
         goal_cell = self.goal_pos // self.num_states_per_cell
-        goal_node = np.array([
-            1,  # type
-            float(self.goal_pos[0]),
-            float(self.goal_pos[1]),
-            float(goal_cell[0]),
-            float(goal_cell[1]),
-            1,  # id
-        ], dtype=np.float32)
+        goal_node = np.array(
+            [
+                1,  # type
+                float(self.goal_pos[0]),
+                float(self.goal_pos[1]),
+                float(goal_cell[0]),
+                float(goal_cell[1]),
+                1,  # id
+            ],
+            dtype=np.float32,
+        )
         nodes.append(goal_node)
 
         # Portal nodes: [type=2, x, y, cell_x, cell_y, portal_pair_id]
         for pair_id, (portal1, portal2) in enumerate(self.portals):
             portal1_cell = portal1 // self.num_states_per_cell
-            portal1_node = np.array([
-                2,  # type
-                float(portal1[0]),
-                float(portal1[1]),
-                float(portal1_cell[0]),
-                float(portal1_cell[1]),
-                float(pair_id * 2),  # id
-            ], dtype=np.float32)
+            portal1_node = np.array(
+                [
+                    2,  # type
+                    float(portal1[0]),
+                    float(portal1[1]),
+                    float(portal1_cell[0]),
+                    float(portal1_cell[1]),
+                    float(pair_id * 2),  # id
+                ],
+                dtype=np.float32,
+            )
             nodes.append(portal1_node)
 
             portal2_cell = portal2 // self.num_states_per_cell
-            portal2_node = np.array([
-                2,  # type
-                float(portal2[0]),
-                float(portal2[1]),
-                float(portal2_cell[0]),
-                float(portal2_cell[1]),
-                float(pair_id * 2 + 1),  # id
-            ], dtype=np.float32)
+            portal2_node = np.array(
+                [
+                    2,  # type
+                    float(portal2[0]),
+                    float(portal2[1]),
+                    float(portal2_cell[0]),
+                    float(portal2_cell[1]),
+                    float(pair_id * 2 + 1),  # id
+                ],
+                dtype=np.float32,
+            )
             nodes.append(portal2_node)
 
         return GraphInstance(nodes=np.stack(nodes), edges=None, edge_links=None)
@@ -423,7 +446,10 @@ class GridworldEnv(gym.Env):
                             break
                     if not is_portal:
                         # Show cell boundaries
-                        if x % self.num_states_per_cell == 0 or y % self.num_states_per_cell == 0:
+                        if (
+                            x % self.num_states_per_cell == 0
+                            or y % self.num_states_per_cell == 0
+                        ):
                             row += " +"
                         else:
                             row += " ."
@@ -490,7 +516,8 @@ class GridworldPredicates(PredicateContainer):
 
 
 class GridworldPerceiver(Perceiver[GraphInstance]):
-    """Perceiver for gridworld that maps graph observations to high-level atoms."""
+    """Perceiver for gridworld that maps graph observations to high-level
+    atoms."""
 
     def __init__(self, num_cells: int, num_states_per_cell: int):
         """Initialize perceiver.
@@ -569,11 +596,7 @@ class BaseGridworldSkill(LiftedOperatorSkill[GraphInstance, int]):
     def _get_lifted_operator(self) -> LiftedOperator:
         """Get the operator this skill implements."""
         op_name = self._get_operator_name()
-        return next(
-            op
-            for op in self._components.operators
-            if op.name == op_name
-        )
+        return next(op for op in self._components.operators if op.name == op_name)
 
     def _get_operator_name(self) -> str:
         """Get the name of the operator this skill implements."""
@@ -609,7 +632,9 @@ class MoveUpSkill(BaseGridworldSkill):
         robot_y = robot_node[2]
 
         # Target is the cell above
-        target_y = ((int(robot_y) // self.num_states_per_cell) + 1) * self.num_states_per_cell
+        target_y = (
+            (int(robot_y) // self.num_states_per_cell) + 1
+        ) * self.num_states_per_cell
 
         # Move up towards target
         if robot_y < target_y - 0.5:
@@ -646,7 +671,9 @@ class MoveRightSkill(BaseGridworldSkill):
         robot_x = robot_node[1]
 
         # Target is the cell to the right
-        target_x = ((int(robot_x) // self.num_states_per_cell) + 1) * self.num_states_per_cell
+        target_x = (
+            (int(robot_x) // self.num_states_per_cell) + 1
+        ) * self.num_states_per_cell
 
         # Move right towards target
         if robot_x < target_x - 0.5:

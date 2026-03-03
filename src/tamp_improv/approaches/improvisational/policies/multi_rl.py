@@ -411,9 +411,9 @@ def train_single_policy(
     if save_dir:
         checkpoint_dir = str(Path(save_dir) / "checkpoints")
     callback = TrainingProgressCallback(
-        check_freq=train_data.config['training_record_interval'],
-        early_stopping=train_data.config['early_stopping'],
-        early_stopping_patience=train_data.config['early_stopping_patience'],
+        check_freq=train_data.config["training_record_interval"],
+        early_stopping=train_data.config["early_stopping"],
+        early_stopping_patience=train_data.config["early_stopping_patience"],
         early_stopping_threshold=0.8,
         policy_key=policy_key,
         save_checkpoints=True,

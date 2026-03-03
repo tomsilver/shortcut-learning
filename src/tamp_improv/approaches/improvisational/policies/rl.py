@@ -130,7 +130,7 @@ class TrainingProgressCallback(BaseCallback):
                 if self.early_stopping:
                     self.lengths.append(np.mean(recent_lengths))
                     if len(self.lengths) >= self.early_stopping_patience:
-                        recent_ls = self.lengths[-self.early_stopping_patience:]
+                        recent_ls = self.lengths[-self.early_stopping_patience :]
                         if min(recent_ls) == recent_ls[0]:
                             policy_info = (
                                 f" for {self.policy_key}" if self.policy_key else ""
@@ -139,7 +139,6 @@ class TrainingProgressCallback(BaseCallback):
                                 f"Early stopping{policy_info}: Path length past its minimum"  # pylint: disable=line-too-long
                             )
                             return False  # Stop training
-                        
 
         return True
 

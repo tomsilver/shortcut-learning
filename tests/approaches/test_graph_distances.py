@@ -8,7 +8,9 @@ from tamp_improv.approaches.improvisational.graph import (
     PlanningGraphEdge,
     PlanningGraphNode,
 )
-from tamp_improv.approaches.improvisational.graph_training import compute_graph_distances
+from tamp_improv.approaches.improvisational.graph_training import (
+    compute_graph_distances,
+)
 
 
 def _make_test_atom(name: str) -> GroundAtom:

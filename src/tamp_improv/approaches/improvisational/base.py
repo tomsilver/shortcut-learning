@@ -156,6 +156,8 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         # For evaluation episode logging
         self.initial_node_id: int | None = None
         self.goal_node_ids: list[int] = []
+        self.initial_node_atoms: list[str] = []
+        self.goal_node_atoms_list: list[list[str]] = []
         self.best_eval_path_node_ids: list[int] = []
         self.best_eval_path_edge_details: list[dict[str, Any]] = []
         self.shortcuts_added_to_graph: int = 0
@@ -164,6 +166,13 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         # Other policies will be initialized during training after wrappers are applied
         if isinstance(policy, MultiRLPolicy):
             policy.initialize(system.wrapped_env)
+
+    def update_system(
+        self, new_system: ImprovisationalTAMPSystem[ObsType, ActType]
+    ):
+        """Update the system for this approach."""
+        self.system = new_system
+        self.domain = new_system.get_domain()
 
     def reset(
         self,
@@ -198,7 +207,7 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
             return ApproachStepResult(
                 action=self.system.wrapped_env.action_space.sample(),
                 terminate=True,
-                info={"already_at_goal": True}
+                info={"already_at_goal": True},
             )
 
         # Compute edge costs and find shortest path
@@ -221,7 +230,7 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
             return ApproachStepResult(
                 action=self.system.wrapped_env.action_space.sample(),
                 terminate=True,
-                info={"no_path_found": True}
+                info={"no_path_found": True},
             )
 
         self.best_eval_path = list(self.current_path)
@@ -295,43 +304,43 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         if not self._current_edge and self.current_path:
             self._current_edge = self.current_path.pop(0)
 
-            if self._current_edge.is_shortcut:
-                self.policy_active = True
+            # if self._current_edge.is_shortcut:
+            #     self.policy_active = True
 
-                target_node = self._current_edge.target
-                self._goal_atoms = set(target_node.atoms)
+            #     target_node = self._current_edge.target
+            #     self._goal_atoms = set(target_node.atoms)
 
-                self.policy.configure_context(
-                    PolicyContext(
-                        goal_atoms=self._goal_atoms,
-                        current_atoms=atoms,
-                        info={
-                            "source_node_id": self._current_edge.source.id,
-                            "target_node_id": target_node.id,
-                        },
-                    )
-                )
-                if using_goal_env and goal_env is not None:
-                    target_state = self.policy.node_states[target_node.id]
-                    if isinstance(target_state, list):
-                        target_state = target_state[0]
-                    target_atoms = set(self._current_edge.target.atoms)
-                    if goal_env.use_atom_as_obs is True:
-                        target_vec = goal_env.create_atom_vector(target_atoms)
-                        current_vec = goal_env.create_atom_vector(atoms)
-                    else:
-                        target_vec = goal_env.flatten_obs(target_state)
-                        current_vec = goal_env.flatten_obs(obs)
-                    dict_obs = {
-                        "observation": goal_env.flatten_obs(obs),
-                        "achieved_goal": current_vec,
-                        "desired_goal": target_vec,
-                    }
-                    return ApproachStepResult(action=self.policy.get_action(dict_obs))  # type: ignore[arg-type] # pylint: disable=line-too-long
-                if using_context_env and context_env is not None:
-                    aug_obs = context_env.augment_observation(obs)
-                    return ApproachStepResult(action=self.policy.get_action(aug_obs))  # type: ignore[arg-type] # pylint: disable=line-too-long
-                return ApproachStepResult(action=self.policy.get_action(obs))
+            #     self.policy.configure_context(
+            #         PolicyContext(
+            #             goal_atoms=self._goal_atoms,
+            #             current_atoms=atoms,
+            #             info={
+            #                 "source_node_id": self._current_edge.source.id,
+            #                 "target_node_id": target_node.id,
+            #             },
+            #         )
+            #     )
+            #     if using_goal_env and goal_env is not None:
+            #         target_state = self.policy.node_states[target_node.id]
+            #         if isinstance(target_state, list):
+            #             target_state = target_state[0]
+            #         target_atoms = set(self._current_edge.target.atoms)
+            #         if goal_env.use_atom_as_obs is True:
+            #             target_vec = goal_env.create_atom_vector(target_atoms)
+            #             current_vec = goal_env.create_atom_vector(atoms)
+            #         else:
+            #             target_vec = goal_env.flatten_obs(target_state)
+            #             current_vec = goal_env.flatten_obs(obs)
+            #         dict_obs = {
+            #             "observation": goal_env.flatten_obs(obs),
+            #             "achieved_goal": current_vec,
+            #             "desired_goal": target_vec,
+            #         }
+            #         return ApproachStepResult(action=self.policy.get_action(dict_obs))  # type: ignore[arg-type] # pylint: disable=line-too-long
+            #     if using_context_env and context_env is not None:
+            #         aug_obs = context_env.augment_observation(obs)
+            #         return ApproachStepResult(action=self.policy.get_action(aug_obs))  # type: ignore[arg-type] # pylint: disable=line-too-long
+            #     return ApproachStepResult(action=self.policy.get_action(obs))
 
             self._current_operator = self._current_edge.operator
             if not self._current_operator:
@@ -399,6 +408,8 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         node_count = 0
         max_nodes = 1300
 
+        # print(init_atoms, self._goal)
+
         while queue and node_count < max_nodes:
             current_node, depth = queue.popleft()
             node_count += 1
@@ -406,13 +417,17 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
             # Check if this is a goal state, stop search if so
             # NOTE: we use the same assumption as PDDL to find the goal nodes of the
             # shortest sequences of symbolic actions
-            if self._goal and self._goal.issubset(current_node.atoms):
-                queue.clear()
-                break
+            # We remove this because it might not be super useful when shortcuts can be flawed?
+            # if self._goal and self._goal.issubset(current_node.atoms):
+            #     queue.clear()
+            #     break
 
             applicable_ops = self._find_applicable_operators(
                 set(current_node.atoms), objects
             )
+
+            print("Current node:", current_node.id, "Depth:", depth)
+            print("Applicable operators:", [op.name for op in applicable_ops])
 
             for op in applicable_ops:
                 next_atoms = set(current_node.atoms)
@@ -420,23 +435,40 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
                 next_atoms.update(op.add_effects)
 
                 next_atoms_frozen = frozenset(next_atoms)
+                # Check if operator is a shortcut by name
+                is_shortcut = "Shortcut" in op.name
+                # if is_shortcut:
+                    # print(f"Found shortcut operator: {op.name}, from node {current_node.atoms} to new node {next_atoms}")
                 if next_atoms_frozen in visited_states:
                     next_node = visited_states[next_atoms_frozen]
-                    graph.add_edge(current_node, next_node, op)
+                    # print("I'm about to add an edge from", current_node.id, "to", next_node.id, "using operator", op.name, "is shortcut", is_shortcut)
+                    graph.add_edge(current_node, next_node, op, is_shortcut=is_shortcut)
                 else:
                     next_node = graph.add_node(next_atoms)
                     visited_states[next_atoms_frozen] = next_node
-                    graph.add_edge(current_node, next_node, op)
+                    # print("I'm about to add an edge from", current_node.id, "to", next_node.id, "using operator", op.name, "is shortcut", is_shortcut)
+                    graph.add_edge(current_node, next_node, op, is_shortcut=is_shortcut)
                     queue.append((next_node, depth + 1))
+
+                
+                # for e in graph.edges:
+                #     if e.operator.name == "Shortcut_6":
+                #         print("Edge with operator:", e.operator.name, "is shortcut", e.is_shortcut)
 
         print(
             f"Planning graph with {len(graph.nodes)} nodes and {len(graph.edges)} edges"
         )
 
+        # print("Edges of graph:", graph.edges)
+        # for e in graph.edges:
+        #     if e.operator.name == "Shortcut_6":
+        #         print("Edge with operator:", e.operator.name, "is shortcut", e.is_shortcut)
+
         # print("\nGraph Edges:")
         # for edge in graph.edges:
         #     op_str = f"{edge.operator.name}" if edge.operator else "SHORTCUT"
         #     print(f"  Node {edge.source.id} --[{op_str}]--> Node {edge.target.id}")
+        # raise Exception("Debugging - stop here")
         return graph
 
     def _find_applicable_operators(
@@ -483,7 +515,9 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         """Try to add shortcut edges to the graph."""
         using_goal_env, _ = self._using_goal_env(self.system.wrapped_env)
         if not self.training_mode and self.trained_signatures:
-            print(f"DEBUG: Attempting to add shortcuts with {len(self.trained_signatures)} trained signatures")
+            print(
+                f"DEBUG: Attempting to add shortcuts with {len(self.trained_signatures)} trained signatures"
+            )
         for source_node in graph.nodes:
             for target_node in graph.nodes:
                 if source_node == target_node:
@@ -534,7 +568,9 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
                 )
                 if self.policy.can_initiate():
                     if not self.training_mode:
-                        print(f"  DEBUG: Adding shortcut {source_node.id}→{target_node.id} (sim: {best_similarity:.2f})")
+                        print(
+                            f"  DEBUG: Adding shortcut {source_node.id}→{target_node.id} (sim: {best_similarity:.2f})"
+                        )
                     graph.add_edge(source_node, target_node, None, is_shortcut=True)
                     self.shortcuts_added_to_graph += 1
                 elif not self.training_mode:
@@ -557,6 +593,11 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         """Efficiently compute shortest path during evaluation."""
         assert self.planning_graph is not None
 
+        l = list(self.planning_graph.node_map.keys())
+        print("Node map:")
+        for i in range(len(l)):
+            print(f"  Node {i}: {l[i]}")
+
         _, init_atoms, _ = self.system.perceiver.reset(obs, info)
         initial_node = self.planning_graph.node_map[frozenset(init_atoms)]
         goal_nodes = [
@@ -565,8 +606,13 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
 
         self.initial_node_id = initial_node.id
         self.goal_node_ids = [node.id for node in goal_nodes]
+        self.initial_node_atoms = sorted(str(a) for a in initial_node.atoms)
+        self.goal_node_atoms_list = [
+            sorted(str(a) for a in node.atoms) for node in goal_nodes
+        ]
 
         print("Initial node:", initial_node)
+        print("Initial obs:", obs)
         print("Goal nodes:", goal_nodes)
 
         if not goal_nodes:
@@ -620,6 +666,10 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
                 (path_state, path_info),
             ) = heapq.heappop(pq)
 
+            # print("Current node:", current_node.id, "with cost:", current_cost)
+            # print("Current path:", current_path)
+            # print("Path edges:", [f"{e.source.id}->{e.target.id}" for e in path_edges])
+
             if current_cost >= best_goal_cost:
                 break
 
@@ -630,9 +680,14 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
             if state_key in distances and current_cost > distances[state_key]:
                 continue
 
+            # print("Outgoing edges from node", current_node.id, "are:", 
+            #       [f"{edge.source.id}->{edge.target.id}" for edge in 
+            #        self.planning_graph.node_to_outgoing_edges.get(current_node, [])])
+
             for edge in self.planning_graph.node_to_outgoing_edges.get(
                 current_node, []
             ):
+                # print("  Considering edge:", f"{edge.source.id}->{edge.target.id}")
                 # Check if target node is already in current path to prevent cycles
                 if edge.target.id in current_path:
                     continue
@@ -654,6 +709,10 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
                         f"    Edge {current_node.id} -> {edge.target.id} execution failed."  # pylint: disable=line-too-long
                     )
                     continue
+
+                if current_node.id == 0 and edge.target.id == 3:
+                    print("    Debug: Edge from initial node to node 3 executed with cost:", edge_cost)
+                    print("Nodes 0 and 3 atoms:", current_node.atoms, edge.target.atoms)
 
                 new_total_cost = current_cost + edge_cost
                 print(
@@ -756,47 +815,53 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
 
         # print("Executing edge:", edge, init_atoms, goal_atoms)
 
-        if edge.is_shortcut:
-            self.policy.configure_context(
-                PolicyContext(
-                    goal_atoms=goal_atoms,
-                    current_atoms=init_atoms,
-                    info={
-                        "source_node_id": edge.source.id,
-                        "target_node_id": edge.target.id,
-                    },
-                )
-            )
-            if using_goal_env and goal_env is not None:
-                assert hasattr(
-                    self.policy, "node_states"
-                ), "Policy must have node_states"
-                target_state = self.policy.node_states[edge.target.id]
-                if isinstance(target_state, list):
-                    target_state = target_state[0]
-                target_atoms_set = set(edge.target.atoms)
-                if goal_env.use_atom_as_obs is True:
-                    target_vec = goal_env.create_atom_vector(target_atoms_set)
-                    current_vec = goal_env.create_atom_vector(init_atoms)
-                else:
-                    target_vec = goal_env.flatten_obs(target_state)
-                    current_vec = goal_env.flatten_obs(start_state)
-                aug_obs = {
-                    "observation": goal_env.flatten_obs(start_state),
-                    "achieved_goal": current_vec,
-                    "desired_goal": target_vec,
-                }
-            elif using_context_env and context_env is not None:
-                aug_obs = context_env.augment_observation(start_state)  # type: ignore[assignment]  # pylint: disable=line-too-long
-            else:
-                aug_obs = start_state  # type: ignore[assignment]
-            skill: Policy | Skill = self.policy
-        else:
-            assert edge.operator is not None
-            skill = self._get_skill(edge.operator)
-            skill.reset(edge.operator)
-            aug_obs = start_state  # type: ignore[assignment]
-            # print("Skill:", skill)
+        # if edge.is_shortcut:
+        #     self.policy.configure_context(
+        #         PolicyContext(
+        #             goal_atoms=goal_atoms,
+        #             current_atoms=init_atoms,
+        #             info={
+        #                 "source_node_id": edge.source.id,
+        #                 "target_node_id": edge.target.id,
+        #             },
+        #         )
+        #     )
+        #     if using_goal_env and goal_env is not None:
+        #         assert hasattr(
+        #             self.policy, "node_states"
+        #         ), "Policy must have node_states"
+        #         target_state = self.policy.node_states[edge.target.id]
+        #         if isinstance(target_state, list):
+        #             target_state = target_state[0]
+        #         target_atoms_set = set(edge.target.atoms)
+        #         if goal_env.use_atom_as_obs is True:
+        #             target_vec = goal_env.create_atom_vector(target_atoms_set)
+        #             current_vec = goal_env.create_atom_vector(init_atoms)
+        #         else:
+        #             target_vec = goal_env.flatten_obs(target_state)
+        #             current_vec = goal_env.flatten_obs(start_state)
+        #         aug_obs = {
+        #             "observation": goal_env.flatten_obs(start_state),
+        #             "achieved_goal": current_vec,
+        #             "desired_goal": target_vec,
+        #         }
+        #     elif using_context_env and context_env is not None:
+        #         aug_obs = context_env.augment_observation(start_state)  # type: ignore[assignment]  # pylint: disable=line-too-long
+        #     else:
+        #         aug_obs = start_state  # type: ignore[assignment]
+        #     skill: Policy | Skill = self.policy
+        # else:
+        #     assert edge.operator is not None
+        #     skill = self._get_skill(edge.operator)
+        #     skill.reset(edge.operator)
+        #     aug_obs = start_state  # type: ignore[assignment]
+        #     # print("Skill:", skill)
+        
+        assert edge.operator is not None
+        skill = self._get_skill(edge.operator)
+        skill.reset(edge.operator)
+        aug_obs = start_state  # type: ignore[assignment]
+        # print("Skill:", skill)
 
         num_steps = 0
         curr_raw_obs = start_state
@@ -813,29 +878,29 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
             atoms = self.system.perceiver.step(curr_raw_obs)
             # print("State:", curr_raw_obs, atoms)
 
-            if edge.is_shortcut:
-                if using_goal_env and goal_env is not None:
-                    target_state = self.policy.node_states[edge.target.id]
-                    if isinstance(target_state, list):
-                        target_state = target_state[0]
-                    target_atoms_set = set(edge.target.atoms)
-                    if goal_env.use_atom_as_obs is True:
-                        target_vec = goal_env.create_atom_vector(target_atoms_set)
-                        current_vec = goal_env.create_atom_vector(atoms)
-                    else:
-                        target_vec = goal_env.flatten_obs(target_state)
-                        current_vec = goal_env.flatten_obs(curr_raw_obs)
-                    curr_aug_obs = {
-                        "observation": goal_env.flatten_obs(curr_raw_obs),
-                        "achieved_goal": current_vec,
-                        "desired_goal": target_vec,
-                    }
-                elif using_context_env and context_env is not None:
-                    curr_aug_obs = context_env.augment_observation(curr_raw_obs)  # type: ignore[assignment]  # pylint: disable=line-too-long
-                else:
-                    curr_aug_obs = curr_raw_obs  # type: ignore[assignment]
-            else:
-                curr_aug_obs = curr_raw_obs  # type: ignore[assignment]
+            # if edge.is_shortcut:
+            #     if using_goal_env and goal_env is not None:
+            #         target_state = self.policy.node_states[edge.target.id]
+            #         if isinstance(target_state, list):
+            #             target_state = target_state[0]
+            #         target_atoms_set = set(edge.target.atoms)
+            #         if goal_env.use_atom_as_obs is True:
+            #             target_vec = goal_env.create_atom_vector(target_atoms_set)
+            #             current_vec = goal_env.create_atom_vector(atoms)
+            #         else:
+            #             target_vec = goal_env.flatten_obs(target_state)
+            #             current_vec = goal_env.flatten_obs(curr_raw_obs)
+            #         curr_aug_obs = {
+            #             "observation": goal_env.flatten_obs(curr_raw_obs),
+            #             "achieved_goal": current_vec,
+            #             "desired_goal": target_vec,
+            #         }
+            #     elif using_context_env and context_env is not None:
+            #         curr_aug_obs = context_env.augment_observation(curr_raw_obs)  # type: ignore[assignment]  # pylint: disable=line-too-long
+            #     else:
+            #         curr_aug_obs = curr_raw_obs  # type: ignore[assignment]
+            # else:
+            curr_aug_obs = curr_raw_obs  # type: ignore[assignment]
 
             num_steps += 1
 

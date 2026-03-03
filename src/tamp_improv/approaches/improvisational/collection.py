@@ -6,9 +6,8 @@ Pruning is handled separately in pruning.py.
 
 from typing import Any
 
-from omegaconf import DictConfig
-
 import numpy as np
+from omegaconf import DictConfig
 
 from tamp_improv.approaches.improvisational.base import (
     ImprovisationalTAMPApproach,
@@ -82,7 +81,9 @@ def collect_states_for_all_nodes(
         explored_count += 1
 
         current_atoms_frozen = frozenset(current_node.atoms)
-        print(f"\n[{explored_count}] Exploring from node {current_node.id}: {current_atoms_frozen}")
+        print(
+            f"\n[{explored_count}] Exploring from node {current_node.id}: {current_atoms_frozen}"
+        )
         print(f"  Queue size: {len(queue)}, Visited nodes: {len(visited_nodes)}")
 
         # Try each outgoing edge from current node
@@ -112,7 +113,9 @@ def collect_states_for_all_nodes(
                 print(f"  Warning: No skill found for operator {edge.operator.name}")
                 continue
 
-            print(f"  Trying edge {current_node.id} → {target_node.id} (operator: {edge.operator.name})")
+            print(
+                f"  Trying edge {current_node.id} → {target_node.id} (operator: {edge.operator.name})"
+            )
 
             # Reset environment to current state
             obs, _ = system.env.reset_from_state(current_state)
@@ -132,9 +135,10 @@ def collect_states_for_all_nodes(
                 # Check if we reached target node
                 if atoms_frozen == target_atoms_frozen:
                     success = True
-                    print(f"    → Reached target node {target_node.id} in {step + 1} steps")
+                    print(
+                        f"    → Reached target node {target_node.id} in {step + 1} steps"
+                    )
                     break
-
 
             if success:
                 # Mark node as visited
@@ -156,7 +160,9 @@ def collect_states_for_all_nodes(
     print(f"{'='*80}")
     print(f"Visited {len(visited_nodes)}/{len(planning_graph.nodes)} nodes")
     print(f"Discovered {len(atom_states)} unique atom sets")
-    print(f"Total states collected: {sum(len(states) for states in atom_states.values())}")
+    print(
+        f"Total states collected: {sum(len(states) for states in atom_states.values())}"
+    )
     print(f"\nAtom sets discovered:")
     for atoms_frozen in sorted(atom_states.keys(), key=lambda x: len(x)):
         atoms_str = ", ".join(sorted([str(atom) for atom in atoms_frozen]))
@@ -234,7 +240,9 @@ def collect_all_shortcuts(
         else:
             print("Collecting states for all nodes via BFS...")
             # Use BFS to collect states (returns {frozenset(atoms): [states]})
-            atom_states = collect_states_for_all_nodes(system, planning_graph, max_steps_per_skill=50)
+            atom_states = collect_states_for_all_nodes(
+                system, planning_graph, max_steps_per_skill=50
+            )
 
             # Convert to node ID format: {node_id: [states]}
             observed_states = {}
@@ -269,10 +277,12 @@ def collect_all_shortcuts(
                     all_current_atoms.append(candidate.source_atoms)
                     all_goal_atoms.append(candidate.target_atoms)
                     # Store shortcut info with node IDs (needed for MultiRL policy keys)
-                    all_shortcut_info.append({
-                        "source_node_id": source_id,
-                        "target_node_id": target_id,
-                    })
+                    all_shortcut_info.append(
+                        {
+                            "source_node_id": source_id,
+                            "target_node_id": target_id,
+                        }
+                    )
 
                 # Track this shortcut
                 all_valid_shortcuts.append((source_id, target_id))
@@ -359,7 +369,8 @@ def collect_total_shortcuts(
         collect_episodes=collect_episodes,
         seed=cfg.seed,
         planner_id=cfg.collection.planner_id,
-        max_steps_per_edge=cfg.collection.max_steps_per_edge
+        max_steps_per_edge=cfg.collection.max_steps_per_edge,
+        cost_samples=cfg.collection.num_cost_rollouts
     )
 
     # Store the total graph in the approach
@@ -409,10 +420,12 @@ def collect_total_shortcuts(
                 all_states.append(source_state)
                 all_current_atoms.append(candidate.source_atoms)
                 all_goal_atoms.append(candidate.target_atoms)
-                all_shortcut_info.append({
-                    "source_node_id": source_id,
-                    "target_node_id": target_id,
-                })
+                all_shortcut_info.append(
+                    {
+                        "source_node_id": source_id,
+                        "target_node_id": target_id,
+                    }
+                )
                 # Add one entry to valid_shortcuts per state pair
                 all_valid_shortcuts.append((source_id, target_id))
 
@@ -490,7 +503,9 @@ def collect_shortcuts_single_episode(
         observed_states = approach.observed_states
     else:
         # Use BFS to collect states (returns {frozenset(atoms): [states]})
-        atom_states = collect_states_for_all_nodes(system, planning_graph, max_steps_per_skill=50)
+        atom_states = collect_states_for_all_nodes(
+            system, planning_graph, max_steps_per_skill=50
+        )
 
         # Convert to node ID format: {node_id: [states]}
         observed_states = {}
@@ -550,7 +565,7 @@ def collect_total_planning_graph(
     seed: int = 42,
     planner_id: str = "pyperplan",
     compute_costs: bool = True,
-    cost_samples: int = 25,
+    cost_samples: int = 100,
     max_steps_per_edge: int = 100,
 ) -> tuple[PlanningGraph, dict[frozenset, list]]:
     """Build a unified planning graph across multiple episodes.
@@ -618,7 +633,9 @@ def collect_total_planning_graph(
             system, episode_graph, max_steps_per_skill=max_steps_per_edge
         )
 
-        print(f"Episode graph has {len(episode_graph.nodes)} nodes, {len(episode_graph.edges)} edges")
+        print(
+            f"Episode graph has {len(episode_graph.nodes)} nodes, {len(episode_graph.edges)} edges"
+        )
         print(f"BFS collected states for {len(episode_states)} atom sets")
 
         # Merge nodes into total graph
@@ -645,9 +662,9 @@ def collect_total_planning_graph(
                                 break
                     elif isinstance(new_state, np.ndarray):
                         for existing_state in node_states[total_node.atoms]:
-                            if isinstance(existing_state, np.ndarray) and np.array_equal(
-                                existing_state, new_state
-                            ):
+                            if isinstance(
+                                existing_state, np.ndarray
+                            ) and np.array_equal(existing_state, new_state):
                                 is_duplicate = True
                                 break
 
@@ -705,7 +722,9 @@ def collect_total_planning_graph(
 
     # Compute edge costs if requested
     if compute_costs:
-        from tamp_improv.approaches.improvisational.analyze import compute_all_edge_costs
+        from tamp_improv.approaches.improvisational.analyze import (
+            compute_all_edge_costs,
+        )
 
         compute_all_edge_costs(
             system=system,

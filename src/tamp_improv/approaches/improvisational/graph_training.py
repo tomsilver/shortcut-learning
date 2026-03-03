@@ -175,12 +175,36 @@ def find_path_to_node(
                 queue.append((next_node, path + [edge]))
     return []
 
+def compute_first_edge(
+    planning_graph: PlanningGraph,
+    init_atoms: frozenset[GroundAtom],
+    goal: frozenset[GroundAtom],
+) -> PlanningGraphEdge:
+    """Return the first edge in a path from init_atoms to goal."""
+    path = planning_graph.find_shortest_path(init_atoms, goal)
+    if path:
+        return path[0]
+    return None
+
+def compute_first_edge_dict(planning_graph: PlanningGraph) -> dict[
+    tuple[frozenset[GroundAtom], frozenset[GroundAtom]], PlanningGraphEdge
+]:
+    """Compute first edge for all node pairs in the planning graph."""
+    first_edge_dict: dict[tuple[frozenset[GroundAtom], frozenset[GroundAtom]], PlanningGraphEdge] = {}
+    for source_node in planning_graph.nodes:
+        for target_node in planning_graph.nodes:
+            if source_node == target_node:
+                continue
+            first_edge = compute_first_edge(planning_graph, source_node.atoms, target_node.atoms)
+            first_edge_dict[(source_node.atoms, target_node.atoms)] = first_edge
+    return first_edge_dict
 
 def compute_graph_distances(
     planning_graph: PlanningGraph,
     exclude_shortcuts: bool = True,
 ) -> dict[tuple[int, int], float]:
-    """Compute shortest path distances between all node pairs using path-dependent costs.
+    """Compute shortest path distances between all node pairs using path-
+    dependent costs.
 
     Uses Dijkstra's algorithm with path-dependent edge costs to compute D(s, s') for
     all pairs of nodes. Edge costs are looked up using edge.get_cost(path), which
@@ -197,6 +221,7 @@ def compute_graph_distances(
         Dictionary mapping (source_id, target_id) -> distance
     """
     import itertools
+
     distances = {}
 
     # Run Dijkstra from each source node
@@ -234,11 +259,20 @@ def compute_graph_distances(
             # Explore outgoing edges
             for edge in planning_graph.node_to_outgoing_edges.get(current_node, []):
                 # Skip shortcuts if requested
-                if exclude_shortcuts and edge.is_shortcut:
-                    continue
+                # if exclude_shortcuts and edge.is_shortcut:
+                #     continue
 
                 # Get path-dependent edge cost using the same logic as evaluation
                 edge_cost = edge.get_cost(current_path)
+
+                print("Edge cost:", edge_cost)
+                print("Edge.cost:", edge.cost)
+                print("Edge.max_cost:", edge.max_cost)
+
+                # If this is the first edge from the source node, add the average cost rather than the max cost
+                # to prevent an overestimate
+                if current_id == source_node.id:
+                    edge_cost = edge.cost
 
                 new_cost = current_cost + edge_cost
                 target_id = edge.target.id
@@ -248,7 +282,10 @@ def compute_graph_distances(
 
                 # Only explore this path if it improves the best distance to target node
                 # This prevents infinite exploration of redundant paths
-                if target_id not in best_distances or new_cost < best_distances[target_id]:
+                if (
+                    target_id not in best_distances
+                    or new_cost < best_distances[target_id]
+                ):
                     best_distances[target_id] = new_cost
 
                     # Track this specific (node, path) state
@@ -449,7 +486,7 @@ def identify_shortcut_candidates(
         # Use the first state for the candidate (we'll expand later)
         if len(observed_states[source_node.id]) == 0:
             continue
-        
+
         source_state = observed_states[source_node.id][0]
 
         for target_node in nodes:

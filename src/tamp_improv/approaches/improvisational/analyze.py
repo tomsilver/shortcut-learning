@@ -1,16 +1,20 @@
 """Analysis utilities for improvisational TAMP approaches."""
 
-from typing import TypeVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 import numpy as np
 from relational_structs import GroundAtom, GroundOperator
 
-from tamp_improv.approaches.improvisational.graph import PlanningGraph, PlanningGraphEdge
+from tamp_improv.approaches.improvisational.graph import (
+    PlanningGraph,
+    PlanningGraphEdge,
+)
 from tamp_improv.approaches.improvisational.policies.base import Policy, PolicyContext
 from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
-
-from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem, GraphInstance
+from tamp_improv.benchmarks.gridworld import GraphInstance, GridworldTAMPSystem
+from tamp_improv.benchmarks.gridworld_continuous import GridworldContinuousTAMPSystem
 from tamp_improv.benchmarks.gridworld_fixed import GridworldFixedTAMPSystem
+
 ObsType = TypeVar("ObsType")
 
 
@@ -113,7 +117,8 @@ def execute_edge_once(
     """
     # print("Executing edge", edge, "from", start_state)
 
-    if edge.operator is None or edge.is_shortcut:
+    if edge.operator is None:
+        print("Cannot execute edge without operator")
         # Can't execute edge without operator, or if it's a shortcut
         return False, max_steps
 
@@ -128,6 +133,7 @@ def execute_edge_once(
     # Get the skill that can execute this operator
     skills = [s for s in system.skills if s.can_execute(edge.operator)]
     if not skills:
+        print("No skill found to execute operator", edge.operator)
         return False, max_steps
     skill = skills[0]
     skill.reset(edge.operator)
@@ -154,18 +160,22 @@ def execute_edge_once(
             success = True
             break
 
-
     return success, num_steps
+
+# def compute_edge_stats(
+    
+# )
 
 
 def compute_average_edge_cost(
     system: ImprovisationalTAMPSystem,
     edge: PlanningGraphEdge,
     start_states: list[ObsType],
-    num_samples: int = 5,
+    num_samples: int = 100,
     max_steps: int = 100,
-) -> float:
-    """Compute average cost of an edge by executing it from multiple start states.
+) -> tuple[float, float, float]:
+    """Compute average cost of an edge by executing it from multiple start
+    states.
 
     Args:
         system: The TAMP system
@@ -177,6 +187,7 @@ def compute_average_edge_cost(
     Returns:
         Average cost (num_steps) across successful executions, or inf if all failed
     """
+    # print("Hello")
     if not start_states:
         return float("inf")
 
@@ -190,25 +201,31 @@ def compute_average_edge_cost(
 
     # Execute edge from each sampled state
     costs = []
+    num_successes = 0
+    num_trials = len(sampled_states)
     for start_state in sampled_states:
         success, num_steps = execute_edge_once(system, edge, start_state, max_steps)
         if success:
             costs.append(num_steps)
+            num_successes += 1
         else:
             costs.append(max_steps)  # Penalty for failure
 
     # Return average cost
     # print("Costs of edge", edge, "are", costs)
-    if costs:
-        return float(np.max(costs))
-    return float("inf")
+    success_rate = num_successes / num_trials
+    print(f"Edge success rate: {num_successes}/{num_trials} = {success_rate:.2f}")
+
+    print(f"Edge costs: mean={np.mean(costs):.2f}, max={np.max(costs)}, successes={num_successes}/{num_trials}")
+    
+    return float(np.mean(costs)), float(np.max(costs)), success_rate
 
 
 def compute_all_edge_costs(
     system: ImprovisationalTAMPSystem,
     graph: PlanningGraph,
     node_states: dict[frozenset, list],
-    num_samples: int = 5,
+    num_samples: int = 100,
     max_steps: int = 100,
 ) -> None:
     """Compute costs for all edges in a planning graph.
@@ -226,22 +243,26 @@ def compute_all_edge_costs(
     print(f"\nComputing edge costs using {num_samples} samples per edge...")
 
     for edge_idx, edge in enumerate(graph.edges):
-        # Skip shortcut edges (they don't have operators)
-        if edge.is_shortcut or edge.operator is None:
-            edge.cost = 1.0  # Default cost for shortcuts
-            continue
-
+        if edge.cost is not None and edge.cost != float("inf"):
+            continue  # Skip already computed edges
         # Get states for the source node
         source_atoms = edge.source.atoms
         if source_atoms not in node_states or not node_states[source_atoms]:
+            print("No states available for source node with atoms", source_atoms)
+            # print("Node states:", node_states)
             edge.cost = float("inf")  # No states available
             continue
 
         # Compute average cost
-        edge.cost = compute_average_edge_cost(
+        # print("HI")
+        cost, max_cost, success = compute_average_edge_cost(
             system, edge, node_states[source_atoms], num_samples, max_steps
         )
 
+        # Update edge cost and success rate
+        edge.cost = cost
+        edge.max_cost = max_cost
+        edge.success_rate = success
 
         # Print progress every 10 edges
         if (edge_idx + 1) % 10 == 0:
@@ -249,12 +270,14 @@ def compute_all_edge_costs(
 
     print(f"Edge cost computation complete!")
 
+
 def compute_true_distance_gridworld_fixed(
     system: "GridworldFixedTAMPSystem",
     start_state: "GraphInstance",
     goal_node_atoms: set[GroundAtom],
 ) -> float:
-    """Compute true minimum distance from start state to goal node using Dijkstra's algorithm.
+    """Compute true minimum distance from start state to goal node using
+    Dijkstra's algorithm.
 
     This function considers teleporters when computing the shortest path at the state level.
 
@@ -302,9 +325,7 @@ def compute_true_distance_gridworld_fixed(
     closest_y = np.clip(robot_y, target_y_min, target_y_max)
 
     # Use Dijkstra considering teleporters at state level
-    return _dijkstra_state_level(
-        system, robot_x, robot_y, closest_x, closest_y
-    )
+    return _dijkstra_state_level(system, robot_x, robot_y, closest_x, closest_y)
 
 
 def _dijkstra_state_level(
@@ -314,7 +335,8 @@ def _dijkstra_state_level(
     goal_x: float,
     goal_y: float,
 ) -> float:
-    """Compute shortest path using Dijkstra's algorithm at state level with teleporters.
+    """Compute shortest path using Dijkstra's algorithm at state level with
+    teleporters.
 
     The graph consists of:
     - Start position
@@ -336,7 +358,7 @@ def _dijkstra_state_level(
     import heapq
 
     # If no teleporters, use direct Manhattan distance
-    if not hasattr(system.env, 'portal_positions') or not system.env.portal_positions:
+    if not hasattr(system.env, "portal_positions") or not system.env.portal_positions:
         return float(abs(start_x - goal_x) + abs(start_y - goal_y))
 
     # Build graph of important positions (start, goal, and all portal positions)
@@ -382,8 +404,9 @@ def _dijkstra_state_level(
             # Check if this is a teleporter edge
             is_teleporter = False
             for portal1_idx, portal2_idx in portal_indices:
-                if (curr_idx == portal1_idx and next_idx == portal2_idx) or \
-                   (curr_idx == portal2_idx and next_idx == portal1_idx):
+                if (curr_idx == portal1_idx and next_idx == portal2_idx) or (
+                    curr_idx == portal2_idx and next_idx == portal1_idx
+                ):
                     is_teleporter = True
                     break
 
@@ -409,7 +432,8 @@ def compute_true_distance_gridworld(
     start_state: "GraphInstance",
     goal_node_atoms: set[GroundAtom],
 ) -> float:
-    """Compute true minimum distance from start state to goal node using Dijkstra's algorithm.
+    """Compute true minimum distance from start state to goal node using
+    Dijkstra's algorithm.
 
     This function considers teleporters when computing the shortest path at the state level.
 
@@ -488,18 +512,83 @@ def compute_true_distance_gridworld(
 
     return float(distance)
 
+
 def compute_graph_node_distance(
     planning_graph: PlanningGraph,
     start_node_atoms: set[GroundAtom],
-    goal_node_atoms: set[GroundAtom]
-):
+    goal_node_atoms: set[GroundAtom],
+) -> float:
     path = planning_graph.find_shortest_path(start_node_atoms, goal_node_atoms)
     dist = 0
-    for edge in path:
-        dist += edge.cost
-    return dist
+    for i, edge in enumerate(path):
+        if i == 0:
+            dist += edge.max_cost
+        else:
+            dist += edge.max_cost
+    return 5*dist
 
-    
+
+def compute_true_distance_gridworld_continuous(
+    system: "GridworldContinuousTAMPSystem",
+    start_state: "GraphInstance",
+    goal_node_atoms: set[GroundAtom],
+) -> float:
+    """Compute true minimum distance from start state to goal node using
+    Euclidean distance (assuming straight-line movement without portals).
+
+    For gridworld_continuous, the robot moves in continuous space and can move
+    in any direction. We compute the Euclidean distance to the closest point
+    in the target cell.
+
+    Args:
+        system: GridworldContinuousTAMPSystem instance
+        start_state: Low-level state (GraphInstance observation)
+        goal_node_atoms: Set of atoms defining the goal node
+
+    Returns:
+        Euclidean distance from start_state to closest point in goal cell
+    """
+    # Extract robot position from start state
+    robot_node = start_state.nodes[0]  # Single node contains [x, y]
+    robot_x, robot_y = robot_node[0], robot_node[1]
+
+    # Parse goal atoms to determine target cell
+    # Atoms are like: InRow1(robot0), InCol2(robot0)
+    target_row = None
+    target_col = None
+
+    for atom in goal_node_atoms:
+        atom_str = str(atom)
+        if "InRow" in atom_str or "Row" in atom_str:
+            for i in range(system.env.num_cells):
+                if f"Row{i}" in atom_str or f"InRow{i}" in atom_str:
+                    target_row = i
+                    break
+        elif "InCol" in atom_str or "Col" in atom_str:
+            for i in range(system.env.num_cells):
+                if f"Col{i}" in atom_str or f"InCol{i}" in atom_str:
+                    target_col = i
+                    break
+
+    if target_row is None or target_col is None:
+        return float("inf")
+
+    # Compute target cell boundaries
+    cell_size = system.env.cell_size
+    target_x_min = target_col * cell_size
+    target_x_max = (target_col + 1) * cell_size
+    target_y_min = target_row * cell_size
+    target_y_max = (target_row + 1) * cell_size
+
+    # Find closest point in target cell to robot position
+    closest_x = np.clip(robot_x, target_x_min, target_x_max)
+    closest_y = np.clip(robot_y, target_y_min, target_y_max)
+
+    # Compute Euclidean distance to closest point
+    distance = np.sqrt((robot_x - closest_x) ** 2 + (robot_y - closest_y) ** 2)
+
+    return float(distance)
+
 
 def compute_true_distance(
     system: ImprovisationalTAMPSystem,
@@ -523,10 +612,17 @@ def compute_true_distance(
     if isinstance(system, GridworldTAMPSystem):
         return compute_true_distance_gridworld(system, start_state, goal_node_atoms)
     elif isinstance(system, GridworldFixedTAMPSystem):
-        return compute_true_distance_gridworld_fixed(system, start_state, goal_node_atoms)
+        return compute_true_distance_gridworld_fixed(
+            system, start_state, goal_node_atoms
+        )
+    elif isinstance(system, GridworldContinuousTAMPSystem):
+        return compute_true_distance_gridworld_continuous(
+            system, start_state, goal_node_atoms
+        )
     else:
         print(f"True distance computation not implemented for {type(system).__name__}")
         return -42
+
 
 def compute_true_node_distance(
     system: ImprovisationalTAMPSystem,

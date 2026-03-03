@@ -6,8 +6,13 @@ from typing import TYPE_CHECKING, Any
 import gymnasium as gym
 import numpy as np
 
-from tamp_improv.approaches.improvisational.heuristics.base import BaseHeuristic, random_selection
-from tamp_improv.approaches.improvisational.policies.base import GoalConditionedTrainingData
+from tamp_improv.approaches.improvisational.heuristics.base import (
+    BaseHeuristic,
+    random_selection,
+)
+from tamp_improv.approaches.improvisational.policies.base import (
+    GoalConditionedTrainingData,
+)
 
 if TYPE_CHECKING:
     from tamp_improv.approaches.improvisational.policies.base import ObsType
@@ -17,10 +22,10 @@ if TYPE_CHECKING:
 class NoneHeuristic(BaseHeuristic):
     """Rollout-based heuristic for evaluating shortcuts.
 
-    This heuristic performs random rollouts from source nodes to evaluate
-    which target nodes are reachable. The rollouts are executed during
-    multi_train(), and the results (success counts) are cached for use
-    in estimate_node_distance() and prune().
+    This heuristic performs random rollouts from source nodes to
+    evaluate which target nodes are reachable. The rollouts are executed
+    during multi_train(), and the results (success counts) are cached
+    for use in estimate_node_distance() and prune().
 
     The success rate (0-1) indicates how often a target node is reached
     within the rollout horizon.
@@ -93,7 +98,9 @@ class NoneHeuristic(BaseHeuristic):
         # print(self._success_counts, self._success_counts is None)
         return 0
 
-    def prune(self, max_shortcuts: int | None, **kwargs: Any) -> "GoalConditionedTrainingData":
+    def prune(
+        self, max_shortcuts: int | None, **kwargs: Any
+    ) -> "GoalConditionedTrainingData":
         """Prune shortcuts based on rollout success rate.
 
         Keeps only shortcuts where success_rate >= threshold.
@@ -108,9 +115,23 @@ class NoneHeuristic(BaseHeuristic):
         if max_shortcuts is None:
             return self.training_data
 
-        pruned_training_data = random_selection(self.training_data,
-                                                max_shortcuts=max_shortcuts,
-                                                rng=self.rng)
-
+        pruned_training_data = random_selection(
+            self.training_data, max_shortcuts=max_shortcuts, rng=self.rng
+        )
 
         return pruned_training_data
+
+    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
+        """Get action to move from state toward target node.
+
+        Args:
+            obs: Current observation/state
+            target_node: Target node ID
+        Returns:
+            Action to take toward target node
+        """
+        
+        # raise an error
+        raise NotImplementedError(
+            "get_action is not implemented for NoneHeuristic."
+        )

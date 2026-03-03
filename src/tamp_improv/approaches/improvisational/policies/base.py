@@ -11,6 +11,7 @@ from typing import Any, Generic, TypeVar
 
 import gymnasium as gym
 from relational_structs import GroundAtom
+
 from tamp_improv.approaches.improvisational.graph import PlanningGraph
 
 ObsType = TypeVar("ObsType")
@@ -106,7 +107,9 @@ class GoalConditionedTrainingData(TrainingData, Generic[ObsType]):
 
     node_states: dict[int, ObsType] = field(default_factory=dict)
     valid_shortcuts: list[tuple[int, int]] = field(default_factory=list)
-    unique_shortcuts: list[tuple[int, int]] = field(default_factory=list)  # One per node-node pair
+    unique_shortcuts: list[tuple[int, int]] = field(
+        default_factory=list
+    )  # One per node-node pair
     node_atoms: dict[int, set[GroundAtom]] = field(default_factory=dict)
     graph: PlanningGraph | None = None
 

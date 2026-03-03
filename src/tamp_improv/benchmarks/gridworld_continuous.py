@@ -1,18 +1,18 @@
-"""Simplified gridworld environment for distance heuristic learning.
+"""Continuous gridworld environment for distance heuristic learning.
 
-This environment provides a simplified gridworld where:
-- High-level: C×C grid of cells (nodes are just cells, no goal predicate)
-- Low-level: S×S states within each cell
-- Observation: GraphInstance with single node containing just robot position
-- Actions: up, down, left, right, teleport
-- Skills: MoveUp (one cell up), MoveRight (one cell right)
-- Portals: Fixed at cell centers, randomly placed at initialization
+This environment provides a continuous version of the gridworld where:
+- High-level: C×C grid of cells (abstract nodes)
+- Low-level: Continuous (x, y) coordinates in [0, grid_size] x [0, grid_size]
+- Observation: GraphInstance with single node containing robot position [x, y]
+- Actions: Continuous velocity (vx, vy) clipped to maximum magnitude
+- Skills: Move horizontally/vertically between adjacent cells (no diagonals)
+- Portals: Point pairs where being within radius r triggers teleportation
 
-Key differences from gridworld.py:
-- No GoalReached predicate (nodes are just spatial cells)
-- Random start state and random goal node each reset
-- Fixed portal locations (placed at initialization, not randomized on reset)
-- Minimal observation space (just 2D robot position)
+Key differences from gridworld_fixed:
+- Continuous state space (float x, y)
+- Continuous action space (velocity vx, vy)
+- Portal activation based on proximity (radius) instead of exact position
+- Shortcuts can include diagonal movement (not just horizontal/vertical)
 """
 
 from __future__ import annotations
@@ -45,78 +45,89 @@ from tamp_improv.benchmarks.base import (
 from tamp_improv.benchmarks.wrappers import ImprovWrapper
 
 # ============================================================================
-# Gridworld Fixed Gymnasium Environment
+# Gridworld Continuous Gymnasium Environment
 # ============================================================================
 
 
-class GridworldFixedEnv(gym.Env):
-    """A simplified hierarchical gridworld with fixed portals.
+class GridworldContinuousEnv(gym.Env):
+    """A continuous hierarchical gridworld with portals.
 
     State space:
     - High-level: C×C cells
-    - Low-level: S×S positions within each cell
-    - Total positions: (C*S) × (C*S)
+    - Low-level: Continuous (x, y) in [0, grid_size] x [0, grid_size]
 
-    Key simplifications:
-    - Nodes are just cells (no goal predicate)
-    - Portals are fixed at cell centers (set at initialization)
-    - Observation is just 2D robot position
+    Key features:
+    - Continuous position and velocity
+    - Portals activated by proximity (within radius)
+    - Abstract nodes are grid cells
     """
 
     metadata = {"render_modes": ["human"], "render_fps": 4}
 
     def __init__(
         self,
-        num_cells: int = 2,
-        num_states_per_cell: int = 5,
+        num_cells: int = 3,
+        grid_size: float = 10.0,
+        max_velocity: float = 1.0,
+        portal_radius: float = 0.5,
         num_teleporters: int = 1,
         render_mode: str | None = None,
         max_episode_steps: int = 200,
         seed: int | None = None,
     ):
-        """Initialize gridworld.
+        """Initialize continuous gridworld.
 
         Args:
             num_cells: Number of cells in each dimension (C)
-            num_states_per_cell: Number of low-level states per cell (S)
+            grid_size: Size of the grid in each dimension
+            max_velocity: Maximum velocity magnitude
+            portal_radius: Radius within which portal activates
             num_teleporters: Number of portal pairs
             render_mode: Rendering mode
             max_episode_steps: Maximum steps before episode ends
-            seed: Random seed for initializing portal cell pairs
+            seed: Random seed for initializing portal locations
         """
         super().__init__()
         self.num_cells = num_cells
-        self.num_states_per_cell = num_states_per_cell
+        self.grid_size = grid_size
+        self.max_velocity = max_velocity
+        self.portal_radius = portal_radius
         self.num_teleporters = num_teleporters
         self.render_mode = render_mode
         self.max_episode_steps = max_episode_steps
 
-        # Total grid size
-        self.grid_size = num_cells * num_states_per_cell
+        # Cell size
+        self.cell_size = grid_size / num_cells
 
         # Observation: GraphInstance with single node [x, y]
-        # Minimal observation - just robot position
         self.observation_space = Graph(
-            node_space=Box(low=0, high=self.grid_size, shape=(2,), dtype=np.float32),
+            node_space=Box(
+                low=0.0, high=grid_size, shape=(2,), dtype=np.float32
+            ),
             edge_space=None,
         )
 
-        # Actions: 0=up, 1=down, 2=left, 3=right, 4=teleport
-        self.action_space = spaces.Discrete(5)
+        # Actions: continuous velocity (vx, vy)
+        self.action_space = spaces.Box(
+            low=-max_velocity,
+            high=max_velocity,
+            shape=(2,),
+            dtype=np.float32,
+        )
 
-        # Initialize FIXED portal locations (locked for entire environment lifetime)
-        # Portals are placed at the CENTER of randomly selected cell pairs
-        self.portal_positions: list[tuple[NDArray[np.int32], NDArray[np.int32]]] = []
+        # Initialize FIXED portal locations
+        self.portal_positions: list[tuple[NDArray[np.float32], NDArray[np.float32]]] = (
+            []
+        )
 
         # Use temporary RNG for initialization
         init_rng = np.random.default_rng(seed)
-        cell_size = num_states_per_cell
 
         # Get all cells
         all_cells = [(i, j) for i in range(num_cells) for j in range(num_cells)]
 
-        # Randomly select cell pairs for portals (without replacement)
-        # obeying constraint: no two portal cells can be adjacent (Manhattan dist <= 1)
+        # Randomly select cell pairs for portals
+        # Constraint: no two portal cells can be adjacent (Manhattan dist <= 1)
         available_cells = all_cells.copy()
         init_rng.shuffle(available_cells)
 
@@ -128,7 +139,6 @@ class GridworldFixedEnv(gym.Env):
             c1_idx = -1
             cell1 = None
             for idx, c in enumerate(available_cells):
-                # Check if c is adjacent to any occupied cell
                 if any(
                     abs(c[0] - oc[0]) + abs(c[1] - oc[1]) <= 1 for oc in occupied_cells
                 ):
@@ -138,7 +148,6 @@ class GridworldFixedEnv(gym.Env):
                 break
 
             if cell1 is None:
-                # No valid cell1 found remaining in available_cells
                 break
 
             # Find first valid cell2
@@ -147,47 +156,40 @@ class GridworldFixedEnv(gym.Env):
             for idx, c in enumerate(available_cells):
                 if idx == c1_idx:
                     continue
-
-                # Check if c is adjacent to occupied cells
                 if any(
                     abs(c[0] - oc[0]) + abs(c[1] - oc[1]) <= 1 for oc in occupied_cells
                 ):
                     continue
-
-                # Check if c is adjacent to cell1
                 if abs(c[0] - cell1[0]) + abs(c[1] - cell1[1]) <= 1:
                     continue
-
                 c2_idx = idx
                 cell2 = c
                 break
 
             if cell2 is not None:
-                # Found a pair
                 occupied_cells.add(cell1)
                 occupied_cells.add(cell2)
 
                 # Place portals at center of each cell
                 portal1_pos = np.array(
                     [
-                        cell1[0] * cell_size + cell_size // 2,
-                        cell1[1] * cell_size + cell_size // 2,
+                        (cell1[0] + 0.5) * self.cell_size,
+                        (cell1[1] + 0.5) * self.cell_size,
                     ],
-                    dtype=np.int32,
+                    dtype=np.float32,
                 )
 
                 portal2_pos = np.array(
                     [
-                        cell2[0] * cell_size + cell_size // 2,
-                        cell2[1] * cell_size + cell_size // 2,
+                        (cell2[0] + 0.5) * self.cell_size,
+                        (cell2[1] + 0.5) * self.cell_size,
                     ],
-                    dtype=np.int32,
+                    dtype=np.float32,
                 )
 
                 self.portal_positions.append((portal1_pos, portal2_pos))
 
-                # Remove used cells from available_cells
-                # Remove larger index first to avoid index shifting issues
+                # Remove used cells
                 if c1_idx > c2_idx:
                     available_cells.pop(c1_idx)
                     available_cells.pop(c2_idx)
@@ -197,14 +199,11 @@ class GridworldFixedEnv(gym.Env):
 
                 portals_found += 1
             else:
-                # Found cell1 but no cell2. cell1 cannot be a start point with current remaining cells.
                 available_cells.pop(c1_idx)
 
         # State variables (randomized each reset)
-        self.robot_pos: NDArray[np.int32] | None = None
-        self.goal_cell: tuple[int, int] | None = (
-            None  # Goal is just a cell, not a position
-        )
+        self.robot_pos: NDArray[np.float32] | None = None
+        self.goal_cell: tuple[int, int] | None = None
         self.step_count: int = 0
 
     def reset(
@@ -212,19 +211,17 @@ class GridworldFixedEnv(gym.Env):
     ) -> tuple[GraphInstance, dict[str, Any]]:
         """Reset environment.
 
-        Robot starts at a random position in the entire grid. Goal is a
-        random cell in the C×C grid. Portals remain fixed at their
-        initialized locations.
+        Robot starts at a random position. Goal is a random cell.
+        Portals remain fixed at their initialized locations.
         """
-        print("reset")
         super().reset(seed=seed)
 
         # Robot starts randomly anywhere in the grid
-        self.robot_pos = self.np_random.integers(
-            0, self.grid_size, size=2, dtype=np.int32
-        )
+        self.robot_pos = self.np_random.uniform(
+            low=0.0, high=self.grid_size, size=2
+        ).astype(np.float32)
 
-        # Goal is a random cell (not a specific position, just a cell)
+        # Goal is a random cell
         self.goal_cell = tuple(self.np_random.integers(0, self.num_cells, size=2))
 
         self.step_count = 0
@@ -233,7 +230,6 @@ class GridworldFixedEnv(gym.Env):
         info = self._get_info()
 
         return obs, info
-        # return obs
 
     def reset_from_state(
         self, state: GraphInstance, seed: int | None = None
@@ -246,16 +242,13 @@ class GridworldFixedEnv(gym.Env):
         Returns:
             Observation and info dict
         """
-        # print("env reset from state")
         # Extract robot position from GraphInstance
-        # Node format: [x, y]
         robot_node = state.nodes[0]
         self.robot_pos = np.array(
-            [int(robot_node[0]), int(robot_node[1])], dtype=np.int32
+            [float(robot_node[0]), float(robot_node[1])], dtype=np.float32
         )
 
         # Goal cell remains the same (set by previous reset)
-        # If not set, default to a cell
         if self.goal_cell is None:
             self.goal_cell = (self.num_cells - 1, self.num_cells - 1)
 
@@ -267,42 +260,38 @@ class GridworldFixedEnv(gym.Env):
         return obs, info
 
     def step(
-        self, action: int
+        self, action: NDArray[np.float32]
     ) -> tuple[GraphInstance, float, bool, bool, dict[str, Any]]:
         """Take a step in the environment.
 
         Args:
-            action: 0=up, 1=down, 2=left, 3=right, 4=teleport
+            action: Velocity (vx, vy) - will be clipped to max magnitude
         """
-        # print("env step")
         assert self.robot_pos is not None
         assert self.goal_cell is not None
 
-        # Execute action
-        new_pos = self.robot_pos.copy()
+        # Clip action to max velocity magnitude
+        action = np.array(action, dtype=np.float32)
+        velocity_magnitude = np.linalg.norm(action)
+        if velocity_magnitude > self.max_velocity:
+            action = action * (self.max_velocity / velocity_magnitude)
 
-        if action == 0:  # Up
-            new_pos[1] = min(self.grid_size - 1, new_pos[1] + 1)
-        elif action == 1:  # Down
-            new_pos[1] = max(0, new_pos[1] - 1)
-        elif action == 2:  # Left
-            new_pos[0] = max(0, new_pos[0] - 1)
-        elif action == 3:  # Right
-            new_pos[0] = min(self.grid_size - 1, new_pos[0] + 1)
-        elif action == 4:  # Teleport
-            # Check if on any portal (fixed positions)
-            for portal1, portal2 in self.portal_positions:
-                if np.array_equal(self.robot_pos, portal1):
-                    new_pos = portal2.copy()
-                    break
-                elif np.array_equal(self.robot_pos, portal2):
-                    new_pos = portal1.copy()
-                    break
-            # If not on a portal, teleport has no effect (wastes a step)
+        # Apply velocity to position
+        new_pos = self.robot_pos + action
 
-        # print(f"env step: new_pos={new_pos}, about to assign to robot_pos={self.robot_pos}")
+        # Clip to grid bounds
+        new_pos = np.clip(new_pos, 0.0, self.grid_size - 1e-6).astype(np.float32)
+
         self.robot_pos = new_pos
-        # print(f"env step: robot_pos AFTER={self.robot_pos}")
+
+        # Check for portal teleportation (unidirectional: portal1 -> portal2 only)
+        for portal1, portal2 in self.portal_positions:
+            dist_to_p1 = np.linalg.norm(self.robot_pos - portal1)
+
+            if dist_to_p1 < self.portal_radius:
+                self.robot_pos = portal2.copy()
+                break
+
         self.step_count += 1
 
         # Check if goal cell reached
@@ -324,12 +313,8 @@ class GridworldFixedEnv(gym.Env):
         """Get current observation as a graph with single node."""
         assert self.robot_pos is not None
 
-        # Single node: [x, y]
         robot_node = np.array(
-            [
-                float(self.robot_pos[0]),
-                float(self.robot_pos[1]),
-            ],
+            [self.robot_pos[0], self.robot_pos[1]],
             dtype=np.float32,
         )
 
@@ -349,87 +334,95 @@ class GridworldFixedEnv(gym.Env):
     def extract_relevant_object_features(
         self, obs: GraphInstance, relevant_object_names: set[str]
     ) -> NDArray[np.float32]:
-        """Extract features from observation.
-
-        In gridworld_fixed, the observation is already minimal (just x, y).
-        We return it as-is for the policy to use.
-
-        Args:
-            obs: Graph observation with single node [x, y]
-            relevant_object_names: Set of object names (should contain "robot0")
-
-        Returns:
-            Feature vector containing [x, y]
-        """
+        """Extract features from observation."""
         if not hasattr(obs, "nodes"):
-            return obs  # Not a graph observation
-
-        # Return flattened position
+            return obs
         return obs.nodes.flatten()
 
-    def _get_cell(self, pos: NDArray[np.int32] | None) -> tuple[int, int]:
+    def _get_cell(self, pos: NDArray[np.float32] | None) -> tuple[int, int]:
         """Get cell coordinates for a position."""
         if pos is None:
             return (-1, -1)
-        cell = pos // self.num_states_per_cell
-        return (int(cell[0]), int(cell[1]))
+        cell_x = int(pos[0] / self.cell_size)
+        cell_y = int(pos[1] / self.cell_size)
+        # Clamp to valid range
+        cell_x = max(0, min(self.num_cells - 1, cell_x))
+        cell_y = max(0, min(self.num_cells - 1, cell_y))
+        return (cell_x, cell_y)
 
     def render(self) -> None:
         """Render the environment."""
         if self.render_mode != "human":
             return
 
-        print("\n" + "=" * (self.grid_size * 2 + 3))
-        for y in range(self.grid_size - 1, -1, -1):
+        # Simple text-based rendering
+        resolution = 20  # Characters per cell
+        total_chars = self.num_cells * resolution
+
+        print("\n" + "=" * (total_chars + 3))
+        for y_idx in range(total_chars - 1, -1, -1):
             row = "|"
-            for x in range(self.grid_size):
+            y = (y_idx + 0.5) / resolution * self.cell_size
+            for x_idx in range(total_chars):
+                x = (x_idx + 0.5) / resolution * self.cell_size
                 pos = np.array([x, y])
                 cell = self._get_cell(pos)
 
-                if np.array_equal(pos, self.robot_pos):
-                    row += " R"
-                elif cell == self.goal_cell:
-                    # Show goal cell with 'g' (lowercase to distinguish from exact goal position)
-                    row += " g"
+                # Check if robot is here
+                if self.robot_pos is not None:
+                    robot_x_idx = int(self.robot_pos[0] / self.cell_size * resolution)
+                    robot_y_idx = int(self.robot_pos[1] / self.cell_size * resolution)
+                    if x_idx == robot_x_idx and y_idx == robot_y_idx:
+                        row += "R"
+                        continue
+
+                # Check if goal cell
+                if cell == self.goal_cell:
+                    row += "g"
+                    continue
+
+                # Check portals
+                is_portal = False
+                for portal1, portal2 in self.portal_positions:
+                    if (
+                        np.linalg.norm(pos - portal1) < self.portal_radius
+                        or np.linalg.norm(pos - portal2) < self.portal_radius
+                    ):
+                        row += "P"
+                        is_portal = True
+                        break
+                if is_portal:
+                    continue
+
+                # Cell boundaries
+                if x_idx % resolution == 0 or y_idx % resolution == 0:
+                    row += "+"
                 else:
-                    # Check if it's a fixed portal
-                    is_portal = False
-                    for portal1, portal2 in self.portal_positions:
-                        if np.array_equal(pos, portal1) or np.array_equal(pos, portal2):
-                            row += " P"
-                            is_portal = True
-                            break
-                    if not is_portal:
-                        # Show cell boundaries
-                        if (
-                            x % self.num_states_per_cell == 0
-                            or y % self.num_states_per_cell == 0
-                        ):
-                            row += " +"
-                        else:
-                            row += " ."
-            row += " |"
+                    row += "."
+
+            row += "|"
             print(row)
-        print("=" * (self.grid_size * 2 + 3))
+        print("=" * (total_chars + 3))
         robot_cell = self._get_cell(self.robot_pos)
         print(
-            f"Step: {self.step_count}, Robot Cell: {robot_cell}, Goal Cell: {self.goal_cell}"
+            f"Step: {self.step_count}, Robot: ({self.robot_pos[0]:.2f}, {self.robot_pos[1]:.2f}), "
+            f"Cell: {robot_cell}, Goal Cell: {self.goal_cell}"
         )
 
 
 # ============================================================================
-# PDDL Types and Predicates
+# PDDL Types and Predicates (same as gridworld_fixed)
 # ============================================================================
 
 
-class GridworldFixedTypes:
-    """Types for gridworld fixed."""
+class GridworldContinuousTypes:
+    """Types for gridworld continuous."""
 
     robot = Type("robot")
 
 
-class GridworldFixedPredicates(PredicateContainer):
-    """Predicates for gridworld fixed - only spatial predicates, no goal."""
+class GridworldContinuousPredicates(PredicateContainer):
+    """Predicates for gridworld continuous - only spatial predicates, no goal."""
 
     def __init__(self, num_cells: int):
         """Initialize predicates.
@@ -437,22 +430,20 @@ class GridworldFixedPredicates(PredicateContainer):
         Creates:
         - InRow0, InRow1, ..., InRow(C-1)
         - InCol0, InCol1, ..., InCol(C-1)
-
-        Note: No GoalReached predicate - nodes are just cells
         """
         self.num_cells = num_cells
 
         # Row predicates
         self.row_preds = []
         for i in range(num_cells):
-            pred = Predicate(f"InRow{i}", [GridworldFixedTypes.robot])
+            pred = Predicate(f"InRow{i}", [GridworldContinuousTypes.robot])
             setattr(self, f"InRow{i}", pred)
             self.row_preds.append(pred)
 
         # Column predicates
         self.col_preds = []
         for j in range(num_cells):
-            pred = Predicate(f"InCol{j}", [GridworldFixedTypes.robot])
+            pred = Predicate(f"InCol{j}", [GridworldContinuousTypes.robot])
             setattr(self, f"InCol{j}", pred)
             self.col_preds.append(pred)
 
@@ -470,30 +461,26 @@ class GridworldFixedPredicates(PredicateContainer):
 # ============================================================================
 
 
-class GridworldFixedPerceiver(Perceiver[GraphInstance]):
-    """Perceiver for gridworld fixed that maps observations to cell-based
+class GridworldContinuousPerceiver(Perceiver[GraphInstance]):
+    """Perceiver for gridworld continuous that maps observations to cell-based
     atoms."""
 
-    def __init__(self, num_cells: int, num_states_per_cell: int):
+    def __init__(self, num_cells: int, cell_size: float):
         """Initialize perceiver.
 
         Args:
             num_cells: Number of cells in each dimension
-            num_states_per_cell: Number of states per cell
+            cell_size: Size of each cell
         """
         self.num_cells = num_cells
-        self.num_states_per_cell = num_states_per_cell
-        self.predicates = GridworldFixedPredicates(num_cells)
-        self.robot_obj = Object("robot0", GridworldFixedTypes.robot)
+        self.cell_size = cell_size
+        self.predicates = GridworldContinuousPredicates(num_cells)
+        self.robot_obj = Object("robot0", GridworldContinuousTypes.robot)
 
     def reset(
         self, obs: GraphInstance, info: dict[str, Any]
     ) -> tuple[set[Object], set[GroundAtom], set[GroundAtom]]:
-        """Reset perceiver and get initial objects, atoms, and goal.
-
-        Goal is determined by the environment's goal_cell stored in
-        info.
-        """
+        """Reset perceiver and get initial objects, atoms, and goal."""
         objects = {self.robot_obj}
 
         # Get current atoms based on robot cell
@@ -514,15 +501,18 @@ class GridworldFixedPerceiver(Perceiver[GraphInstance]):
 
     def _get_atoms_from_obs(self, obs: GraphInstance) -> set[GroundAtom]:
         """Convert graph observation to ground atoms."""
-        # Robot node: [x, y]
         robot_node = obs.nodes[0]
         robot_x, robot_y = robot_node[0], robot_node[1]
 
         atoms = set()
 
         # Determine cell
-        cell_col = int(robot_x // self.num_states_per_cell)
-        cell_row = int(robot_y // self.num_states_per_cell)
+        cell_col = int(robot_x / self.cell_size)
+        cell_row = int(robot_y / self.cell_size)
+
+        # Clamp to valid range
+        cell_col = max(0, min(self.num_cells - 1, cell_col))
+        cell_row = max(0, min(self.num_cells - 1, cell_row))
 
         # Add row and column predicates
         atoms.add(GroundAtom(self.predicates.row_preds[cell_row], [self.robot_obj]))
@@ -532,12 +522,12 @@ class GridworldFixedPerceiver(Perceiver[GraphInstance]):
 
 
 # ============================================================================
-# Skills
+# Skills (move in straight lines - horizontal or vertical only)
 # ============================================================================
 
 
-class BaseGridworldFixedSkill(LiftedOperatorSkill[GraphInstance, int]):
-    """Base class for gridworld fixed skills."""
+class BaseGridworldContinuousSkill(LiftedOperatorSkill[GraphInstance, NDArray]):
+    """Base class for gridworld continuous skills."""
 
     def __init__(self, components: PlanningComponents[GraphInstance]):
         """Initialize skill."""
@@ -555,21 +545,21 @@ class BaseGridworldFixedSkill(LiftedOperatorSkill[GraphInstance, int]):
         raise NotImplementedError
 
 
-class MoveUpFixedSkill(BaseGridworldFixedSkill):
-    """Move up one cell."""
+class MoveUpContinuousSkill(BaseGridworldContinuousSkill):
+    """Move up one cell (vertical line movement)."""
 
-    def __init__(self, components: PlanningComponents[GraphInstance], from_row: int):
-        """Initialize skill.
-
-        Args:
-            components: Planning components containing operators
-            from_row: The row this skill moves from (0 to num_cells-2)
-        """
+    def __init__(
+        self,
+        components: PlanningComponents[GraphInstance],
+        from_row: int,
+        cell_size: float,
+        max_velocity: float,
+    ):
+        """Initialize skill."""
         self.from_row = from_row
+        self.cell_size = cell_size
+        self.max_velocity = max_velocity
         super().__init__(components)
-        # Extract env info from components
-        env = components.perceiver  # type: ignore
-        self.num_states_per_cell = env.num_states_per_cell
 
     def _get_operator_name(self) -> str:
         return f"MoveUp_from_row{self.from_row}"
@@ -577,77 +567,36 @@ class MoveUpFixedSkill(BaseGridworldFixedSkill):
     def _get_action_given_objects(
         self,
         objects: Sequence[Object],
-        obs: GraphInstance,  # type: ignore[override]
-    ) -> int:
-        """Move up by navigating to the cell above."""
+        obs: GraphInstance,
+    ) -> NDArray[np.float32]:
+        """Move up by applying positive y velocity."""
         robot_node = obs.nodes[0]
         robot_y = robot_node[1]
 
-        # Target is the cell above
-        target_y = (
-            (int(robot_y) // self.num_states_per_cell) + 1
-        ) * self.num_states_per_cell
+        # Target is the next cell boundary (moving up)
+        target_y = (self.from_row + 1) * self.cell_size + 0.1
 
-        # Move up towards target
-        if robot_y < target_y - 0.5:
-            return 0  # Up
-        return 0  # Default
+        if robot_y < target_y:
+            # Move up (only vertical, no horizontal)
+            return np.array([0.0, self.max_velocity], dtype=np.float32)
+        return np.array([0.0, 0.0], dtype=np.float32)
 
 
-class MoveRightFixedSkill(BaseGridworldFixedSkill):
-    """Move right one cell."""
+class MoveDownContinuousSkill(BaseGridworldContinuousSkill):
+    """Move down one cell (vertical line movement)."""
 
-    def __init__(self, components: PlanningComponents[GraphInstance], from_col: int):
-        """Initialize skill.
-
-        Args:
-            components: Planning components containing operators
-            from_col: The column this skill moves from (0 to num_cells-2)
-        """
-        self.from_col = from_col
-        super().__init__(components)
-        # Extract env info from components
-        env = components.perceiver  # type: ignore
-        self.num_states_per_cell = env.num_states_per_cell
-
-    def _get_operator_name(self) -> str:
-        return f"MoveRight_from_col{self.from_col}"
-
-    def _get_action_given_objects(
+    def __init__(
         self,
-        objects: Sequence[Object],
-        obs: GraphInstance,  # type: ignore[override]
-    ) -> int:
-        """Move right by navigating to the cell to the right."""
-        robot_node = obs.nodes[0]
-        robot_x = robot_node[0]
-
-        # Target is the cell to the right
-        target_x = (
-            (int(robot_x) // self.num_states_per_cell) + 1
-        ) * self.num_states_per_cell
-
-        # Move right towards target
-        if robot_x < target_x - 0.5:
-            return 3  # Right
-        return 3  # Default
-
-
-class MoveDownFixedSkill(BaseGridworldFixedSkill):
-    """Move down one cell."""
-
-    def __init__(self, components: PlanningComponents[GraphInstance], from_row: int):
-        """Initialize skill.
-
-        Args:
-            components: Planning components containing operators
-            from_row: The row this skill moves from (1 to num_cells-1)
-        """
+        components: PlanningComponents[GraphInstance],
+        from_row: int,
+        cell_size: float,
+        max_velocity: float,
+    ):
+        """Initialize skill."""
         self.from_row = from_row
+        self.cell_size = cell_size
+        self.max_velocity = max_velocity
         super().__init__(components)
-        # Extract env info from components
-        env = components.perceiver  # type: ignore
-        self.num_states_per_cell = env.num_states_per_cell
 
     def _get_operator_name(self) -> str:
         return f"MoveDown_from_row{self.from_row}"
@@ -655,38 +604,73 @@ class MoveDownFixedSkill(BaseGridworldFixedSkill):
     def _get_action_given_objects(
         self,
         objects: Sequence[Object],
-        obs: GraphInstance,  # type: ignore[override]
-    ) -> int:
-        """Move down by navigating to the cell below."""
+        obs: GraphInstance,
+    ) -> NDArray[np.float32]:
+        """Move down by applying negative y velocity."""
         robot_node = obs.nodes[0]
         robot_y = robot_node[1]
 
         # Target is the cell below
-        target_y = (
-            (int(robot_y) // self.num_states_per_cell) - 1
-        ) * self.num_states_per_cell + (self.num_states_per_cell - 1)
+        target_y = (self.from_row - 1) * self.cell_size + self.cell_size - 0.1
 
-        # Move down towards target
-        if robot_y > target_y + 0.5:
-            return 1  # Down
-        return 1  # Default
+        if robot_y > target_y:
+            # Move down (only vertical, no horizontal)
+            return np.array([0.0, -self.max_velocity], dtype=np.float32)
+        return np.array([0.0, 0.0], dtype=np.float32)
 
 
-class MoveLeftFixedSkill(BaseGridworldFixedSkill):
-    """Move left one cell."""
+class MoveRightContinuousSkill(BaseGridworldContinuousSkill):
+    """Move right one cell (horizontal line movement)."""
 
-    def __init__(self, components: PlanningComponents[GraphInstance], from_col: int):
-        """Initialize skill.
-
-        Args:
-            components: Planning components containing operators
-            from_col: The column this skill moves from (1 to num_cells-1)
-        """
+    def __init__(
+        self,
+        components: PlanningComponents[GraphInstance],
+        from_col: int,
+        cell_size: float,
+        max_velocity: float,
+    ):
+        """Initialize skill."""
         self.from_col = from_col
+        self.cell_size = cell_size
+        self.max_velocity = max_velocity
         super().__init__(components)
-        # Extract env info from components
-        env = components.perceiver  # type: ignore
-        self.num_states_per_cell = env.num_states_per_cell
+
+    def _get_operator_name(self) -> str:
+        return f"MoveRight_from_col{self.from_col}"
+
+    def _get_action_given_objects(
+        self,
+        objects: Sequence[Object],
+        obs: GraphInstance,
+    ) -> NDArray[np.float32]:
+        """Move right by applying positive x velocity."""
+        robot_node = obs.nodes[0]
+        robot_x = robot_node[0]
+
+        # Target is the next cell boundary (moving right)
+        target_x = (self.from_col + 1) * self.cell_size + 0.1
+
+        if robot_x < target_x:
+            # Move right (only horizontal, no vertical)
+            return np.array([self.max_velocity, 0.0], dtype=np.float32)
+        return np.array([0.0, 0.0], dtype=np.float32)
+
+
+class MoveLeftContinuousSkill(BaseGridworldContinuousSkill):
+    """Move left one cell (horizontal line movement)."""
+
+    def __init__(
+        self,
+        components: PlanningComponents[GraphInstance],
+        from_col: int,
+        cell_size: float,
+        max_velocity: float,
+    ):
+        """Initialize skill."""
+        self.from_col = from_col
+        self.cell_size = cell_size
+        self.max_velocity = max_velocity
+        super().__init__(components)
 
     def _get_operator_name(self) -> str:
         return f"MoveLeft_from_col{self.from_col}"
@@ -694,21 +678,19 @@ class MoveLeftFixedSkill(BaseGridworldFixedSkill):
     def _get_action_given_objects(
         self,
         objects: Sequence[Object],
-        obs: GraphInstance,  # type: ignore[override]
-    ) -> int:
-        """Move left by navigating to the cell to the left."""
+        obs: GraphInstance,
+    ) -> NDArray[np.float32]:
+        """Move left by applying negative x velocity."""
         robot_node = obs.nodes[0]
         robot_x = robot_node[0]
 
         # Target is the cell to the left
-        target_x = (
-            (int(robot_x) // self.num_states_per_cell) - 1
-        ) * self.num_states_per_cell + (self.num_states_per_cell - 1)
+        target_x = (self.from_col - 1) * self.cell_size + self.cell_size - 0.1
 
-        # Move left towards target
-        if robot_x > target_x + 0.5:
-            return 2  # Left
-        return 2  # Default
+        if robot_x > target_x:
+            # Move left (only horizontal, no vertical)
+            return np.array([-self.max_velocity, 0.0], dtype=np.float32)
+        return np.array([0.0, 0.0], dtype=np.float32)
 
 
 # ============================================================================
@@ -716,32 +698,38 @@ class MoveLeftFixedSkill(BaseGridworldFixedSkill):
 # ============================================================================
 
 
-class GridworldFixedTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, int]):
-    """Simplified gridworld TAMP system for distance heuristic learning."""
+class GridworldContinuousTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, NDArray]):
+    """Continuous gridworld TAMP system for distance heuristic learning."""
 
     def __init__(
         self,
         planning_components: PlanningComponents[GraphInstance],
-        num_cells: int = 2,
-        num_states_per_cell: int = 5,
+        num_cells: int = 3,
+        grid_size: float = 10.0,
+        max_velocity: float = 1.0,
+        portal_radius: float = 0.5,
         num_teleporters: int = 1,
         seed: int | None = None,
         render_mode: str | None = None,
         max_episode_steps: int = 200,
     ):
-        """Initialize gridworld fixed system."""
+        """Initialize gridworld continuous system."""
         self.num_cells = num_cells
-        self.num_states_per_cell = num_states_per_cell
+        self.grid_size = grid_size
+        self.max_velocity = max_velocity
+        self.portal_radius = portal_radius
         self.num_teleporters = num_teleporters
         self.max_episode_steps = max_episode_steps
         self._env_seed = seed
         super().__init__(planning_components, seed=seed, render_mode=render_mode)
 
     def _create_env(self) -> gym.Env:
-        """Create base gridworld fixed environment."""
-        return GridworldFixedEnv(
+        """Create base gridworld continuous environment."""
+        return GridworldContinuousEnv(
             num_cells=self.num_cells,
-            num_states_per_cell=self.num_states_per_cell,
+            grid_size=self.grid_size,
+            max_velocity=self.max_velocity,
+            portal_radius=self.portal_radius,
             num_teleporters=self.num_teleporters,
             render_mode=self._render_mode,
             max_episode_steps=self.max_episode_steps,
@@ -760,7 +748,7 @@ class GridworldFixedTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, int]):
 
     def _get_domain_name(self) -> str:
         """Get domain name."""
-        return "gridworld_fixed"
+        return "gridworld_continuous"
 
     def get_domain(self) -> PDDLDomain:
         """Get PDDL domain."""
@@ -774,19 +762,23 @@ class GridworldFixedTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, int]):
     @classmethod
     def create_default(
         cls,
-        num_cells: int = 2,
-        num_states_per_cell: int = 5,
+        num_cells: int = 3,
+        grid_size: float = 10.0,
+        max_velocity: float = 1.0,
+        portal_radius: float = 0.5,
         num_teleporters: int = 1,
         seed: int = 42,
         render_mode: str | None = None,
         max_episode_steps: int = 200,
-    ) -> GridworldFixedTAMPSystem:
-        """Create default gridworld fixed system."""
-        predicates = GridworldFixedPredicates(num_cells)
-        perceiver = GridworldFixedPerceiver(num_cells, num_states_per_cell)
+    ) -> GridworldContinuousTAMPSystem:
+        """Create default gridworld continuous system."""
+        cell_size = grid_size / num_cells
 
-        # Create operators first
-        robot = Variable("?r", GridworldFixedTypes.robot)
+        predicates = GridworldContinuousPredicates(num_cells)
+        perceiver = GridworldContinuousPerceiver(num_cells, cell_size)
+
+        # Create operators
+        robot = Variable("?r", GridworldContinuousTypes.robot)
         operators = set()
 
         # MoveUp operators (one for each row except the top)
@@ -833,27 +825,33 @@ class GridworldFixedTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, int]):
             )
             operators.add(operator)
 
-        # Note: No NavigateToGoal operator - nodes are just cells
-
-        # Create planning components (needed for skill initialization)
+        # Create planning components
         components = PlanningComponents(
-            types={GridworldFixedTypes.robot},
+            types={GridworldContinuousTypes.robot},
             predicate_container=predicates,
-            skills=set(),  # Will be populated below
+            skills=set(),
             perceiver=perceiver,
             operators=operators,
         )
 
-        # Create skills (they need components to find their operators)
+        # Create skills
         skills = set()
         for row in range(num_cells - 1):
-            skills.add(MoveUpFixedSkill(components, from_row=row))
+            skills.add(
+                MoveUpContinuousSkill(components, from_row=row, cell_size=cell_size, max_velocity=max_velocity)
+            )
         for row in range(1, num_cells):
-            skills.add(MoveDownFixedSkill(components, from_row=row))
+            skills.add(
+                MoveDownContinuousSkill(components, from_row=row, cell_size=cell_size, max_velocity=max_velocity)
+            )
         for col in range(num_cells - 1):
-            skills.add(MoveRightFixedSkill(components, from_col=col))
+            skills.add(
+                MoveRightContinuousSkill(components, from_col=col, cell_size=cell_size, max_velocity=max_velocity)
+            )
         for col in range(1, num_cells):
-            skills.add(MoveLeftFixedSkill(components, from_col=col))
+            skills.add(
+                MoveLeftContinuousSkill(components, from_col=col, cell_size=cell_size, max_velocity=max_velocity)
+            )
 
         # Update components with skills
         components.skills = skills
@@ -861,7 +859,9 @@ class GridworldFixedTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, int]):
         return cls(
             planning_components=components,
             num_cells=num_cells,
-            num_states_per_cell=num_states_per_cell,
+            grid_size=grid_size,
+            max_velocity=max_velocity,
+            portal_radius=portal_radius,
             num_teleporters=num_teleporters,
             seed=seed,
             render_mode=render_mode,

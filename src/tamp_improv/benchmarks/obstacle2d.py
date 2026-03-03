@@ -406,7 +406,7 @@ class Obstacle2DPerceiver(Perceiver[NDArray[np.float32]]):
             Binary vector of shape (n_possible_atoms,) where 1 indicates presence
         """
         # Get all possible atoms from predicates
-        if not hasattr(self, '_atom_vocabulary'):
+        if not hasattr(self, "_atom_vocabulary"):
             self._build_atom_vocabulary()
 
         # Create binary vector
@@ -421,7 +421,8 @@ class Obstacle2DPerceiver(Perceiver[NDArray[np.float32]]):
     def _build_atom_vocabulary(self) -> None:
         """Build vocabulary of all possible atoms for this domain.
 
-        This enumerates all possible ground atoms that can appear in this domain.
+        This enumerates all possible ground atoms that can appear in
+        this domain.
         """
         if self._predicates is None:
             raise RuntimeError("Predicates not initialized. Call initialize() first.")
@@ -430,7 +431,13 @@ class Obstacle2DPerceiver(Perceiver[NDArray[np.float32]]):
 
         # All possible predicates with their objects
         # Note: This is domain-specific and needs to enumerate all possibilities
-        objects = [self._robot, self._block_1, self._block_2, self._target_area, self._table]
+        objects = [
+            self._robot,
+            self._block_1,
+            self._block_2,
+            self._target_area,
+            self._table,
+        ]
 
         # Single-argument predicates
         for pred_attr, pred in [
@@ -455,7 +462,9 @@ class Obstacle2DPerceiver(Perceiver[NDArray[np.float32]]):
                         all_atoms.append(str(atom))
 
         self._atom_vocabulary = sorted(all_atoms)  # Sort for consistency
-        self._atom_to_idx = {atom: idx for idx, atom in enumerate(self._atom_vocabulary)}
+        self._atom_to_idx = {
+            atom: idx for idx, atom in enumerate(self._atom_vocabulary)
+        }
 
     def _is_target_area_blocked(
         self,

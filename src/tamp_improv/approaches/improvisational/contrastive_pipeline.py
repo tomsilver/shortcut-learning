@@ -42,8 +42,8 @@ from tamp_improv.approaches.improvisational.distance_heuristic_v4 import (
 from tamp_improv.approaches.improvisational.policies.multi_rl import MultiRLPolicy
 from tamp_improv.approaches.improvisational.policies.rl import RLConfig
 from tamp_improv.approaches.improvisational.training import (
-    run_evaluation_episode,
     TrainingConfig,
+    run_evaluation_episode,
 )
 from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
 
@@ -246,7 +246,9 @@ def train_and_evaluate(
                 target_atoms = training_data.node_atoms[target_id]
 
                 # Estimated distance
-                estimated_distances[i, j] = heuristic.estimate_node_distance(source_id, target_id)
+                estimated_distances[i, j] = heuristic.estimate_node_distance(
+                    source_id, target_id
+                )
 
                 # True distance
                 true_distances[i, j] = compute_true_node_distance(
@@ -265,11 +267,17 @@ def train_and_evaluate(
         # Compute metrics
         valid_mask = np.isfinite(true_distances) & (true_distances > 0)
         if np.any(valid_mask):
-            mae = np.mean(np.abs(estimated_distances[valid_mask] - true_distances[valid_mask]))
-            rmse = np.sqrt(np.mean((estimated_distances[valid_mask] - true_distances[valid_mask]) ** 2))
+            mae = np.mean(
+                np.abs(estimated_distances[valid_mask] - true_distances[valid_mask])
+            )
+            rmse = np.sqrt(
+                np.mean(
+                    (estimated_distances[valid_mask] - true_distances[valid_mask]) ** 2
+                )
+            )
             correlation = np.corrcoef(
                 estimated_distances[valid_mask].flatten(),
-                true_distances[valid_mask].flatten()
+                true_distances[valid_mask].flatten(),
             )[0, 1]
 
             print(f"\n[Distance Estimation Metrics]")
@@ -279,7 +287,9 @@ def train_and_evaluate(
 
         # Rollout-based evaluation
         print(f"\n[Rollout-Based Evaluation]")
-        num_rollout_pairs = min(20, num_nodes * (num_nodes - 1))  # Sample up to 20 pairs
+        num_rollout_pairs = min(
+            20, num_nodes * (num_nodes - 1)
+        )  # Sample up to 20 pairs
         rollout_successes = 0
         rollout_step_errors = []
         max_rollout_steps = cfg.max_episode_steps
@@ -322,10 +332,14 @@ def train_and_evaluate(
                     rollout_step_errors.append(error)
 
         success_rate = rollout_successes / len(sampled_pairs) if sampled_pairs else 0
-        avg_step_error = np.mean(rollout_step_errors) if rollout_step_errors else float("inf")
+        avg_step_error = (
+            np.mean(rollout_step_errors) if rollout_step_errors else float("inf")
+        )
 
         print(f"  Rollout pairs tested: {len(sampled_pairs)}")
-        print(f"  Success rate: {success_rate:.1%} ({rollout_successes}/{len(sampled_pairs)})")
+        print(
+            f"  Success rate: {success_rate:.1%} ({rollout_successes}/{len(sampled_pairs)})"
+        )
         print(f"  Avg step error vs graph distance: {avg_step_error:.3f}")
 
     # =========================================================================
@@ -396,14 +410,18 @@ def train_and_evaluate(
             config=training_config,
             episode_num=episode_num,
         )
-        print("Episode", episode_num, "succeded:", success, f"(step count {step_count})")
+        print(
+            "Episode", episode_num, "succeded:", success, f"(step count {step_count})"
+        )
 
-        eval_results.append({
-            "episode": episode_num,
-            "success": success,
-            "steps": step_count,
-            "reward": total_reward,
-        })
+        eval_results.append(
+            {
+                "episode": episode_num,
+                "success": success,
+                "steps": step_count,
+                "reward": total_reward,
+            }
+        )
 
         if (episode_num + 1) % 10 == 0:
             successes = sum(1 for r in eval_results if r["success"])

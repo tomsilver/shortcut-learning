@@ -324,7 +324,7 @@ class GraphObstacle2DPerceiver(Perceiver[GraphInstance]):
         Returns:
             Binary vector representation of the atoms
         """
-        if not hasattr(self, '_atom_vocabulary'):
+        if not hasattr(self, "_atom_vocabulary"):
             self._build_atom_vocabulary()
 
         if len(self._atom_vocabulary) == 0:
@@ -379,7 +379,9 @@ class GraphObstacle2DPerceiver(Perceiver[GraphInstance]):
 
         # Create sorted vocabulary and index mapping
         self._atom_vocabulary = sorted(all_atoms)
-        self._atom_to_idx = {atom: idx for idx, atom in enumerate(self._atom_vocabulary)}
+        self._atom_to_idx = {
+            atom: idx for idx, atom in enumerate(self._atom_vocabulary)
+        }
 
 
 class BaseGraphObstacle2DTAMPSystem(BaseTAMPSystem[GraphInstance, NDArray[np.float32]]):

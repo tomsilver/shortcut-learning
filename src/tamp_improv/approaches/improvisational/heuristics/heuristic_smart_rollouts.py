@@ -7,7 +7,9 @@ import gymnasium as gym
 import numpy as np
 
 from tamp_improv.approaches.improvisational.heuristics.base import BaseHeuristic
-from tamp_improv.approaches.improvisational.policies.base import GoalConditionedTrainingData
+from tamp_improv.approaches.improvisational.policies.base import (
+    GoalConditionedTrainingData,
+)
 
 if TYPE_CHECKING:
     from tamp_improv.approaches.improvisational.policies.base import ObsType
@@ -17,10 +19,10 @@ if TYPE_CHECKING:
 class SmartRolloutsHeuristic(BaseHeuristic):
     """Smart rollout-based heuristic for evaluating shortcuts.
 
-    This heuristic performs random rollouts from source nodes to evaluate
-    which target nodes are reachable. The rollouts are executed during
-    multi_train(), and the results (success counts) are cached for use
-    in estimate_node_distance() and prune().
+    This heuristic performs random rollouts from source nodes to
+    evaluate which target nodes are reachable. The rollouts are executed
+    during multi_train(), and the results (success counts) are cached
+    for use in estimate_node_distance() and prune().
 
     The average length indicates how often a target node is reached
     within the rollout horizon.
@@ -140,7 +142,10 @@ class SmartRolloutsHeuristic(BaseHeuristic):
                     # Check if we've reached any target nodes
                     for target_id in self.training_data.node_states.keys():
                         # Skip if not a valid shortcut
-                        if (source_id, target_id) not in self.training_data.valid_shortcuts:
+                        if (
+                            source_id,
+                            target_id,
+                        ) not in self.training_data.valid_shortcuts:
                             continue
 
                         # Skip if already reached in this rollout
@@ -151,7 +156,9 @@ class SmartRolloutsHeuristic(BaseHeuristic):
                         target_atoms = self._target_atoms_by_id.get(target_id)
                         if target_atoms and target_atoms == curr_atoms:
                             shortcut_success_counts[(source_id, target_id)] += 1
-                            shortcut_lengths[(source_id, target_id)].append(step_idx + 1)
+                            shortcut_lengths[(source_id, target_id)].append(
+                                step_idx + 1
+                            )
                             reached_in_this_rollout.add(target_id)
 
                     if terminated or truncated:
@@ -168,8 +175,14 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         print("\nRollout results:")
         for (source_id, target_id), count in shortcut_success_counts.items():
             success_rate = count / self.num_rollouts if self.num_rollouts > 0 else 0.0
-            avg_len = np.mean(shortcut_lengths[(source_id, target_id)]) if shortcut_lengths[(source_id, target_id)] else self.max_steps_per_rollout
-            print(f"  Shortcut ({source_id} -> {target_id}): {count} successes ({success_rate:.2%}), avg length: {avg_len:.1f}")
+            avg_len = (
+                np.mean(shortcut_lengths[(source_id, target_id)])
+                if shortcut_lengths[(source_id, target_id)]
+                else self.max_steps_per_rollout
+            )
+            print(
+                f"  Shortcut ({source_id} -> {target_id}): {count} successes ({success_rate:.2%}), avg length: {avg_len:.1f}"
+            )
 
         # Store results
         self._success_counts = dict(shortcut_success_counts)
@@ -224,17 +237,19 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         """
         # print(self._success_counts, self._success_counts is None)
         if self._success_lens is None:
-            raise RuntimeError("Must call multi_train() before estimate_node_distance()")
+            raise RuntimeError(
+                "Must call multi_train() before estimate_node_distance()"
+            )
 
         lengths = self._success_lens.get((source_node, target_node), [])
         if lengths:
             return float(np.mean(lengths))
         else:
             return float(self.max_steps_per_rollout)
-    
+
     def estimate_probability(self, source_node: int, target_node: int) -> float:
-        """Estimate probability of policy convergence, using a heuristic
-        that it follows a step function based on random rollout success rate."""
+        """Estimate probability of policy convergence, using a heuristic that
+        it follows a step function based on random rollout success rate."""
 
         if self._success_counts is None:
             raise RuntimeError("Must call multi_train() before estimate_probability()")
@@ -243,19 +258,28 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         p_rr = success_count / self.num_rollouts if self.num_rollouts > 0 else 0.0
 
         k = np.log(0.5) / np.log(1 - self.threshold)
-        return 1 - (1 - p_rr)**k
+        return 1 - (1 - p_rr) ** k
 
     def estimate_gain(self, source_node: int, target_node: int) -> float:
         """Estimate gain of training on a shortcut, relative to distance in the
-        initial graph. Higher gain means more useful shortcut."""
+        initial graph.
 
-        graph_distance = self.graph_distances.get((source_node, target_node), float('inf'))
+        Higher gain means more useful shortcut.
+        """
+
+        graph_distance = self.graph_distances.get(
+            (source_node, target_node), float("inf")
+        )
         estimated_distance = self.estimate_node_distance(source_node, target_node)
 
-        gain = np.clip(graph_distance - estimated_distance, 0, self.max_steps_per_rollout)
+        gain = np.clip(
+            graph_distance - estimated_distance, 0, self.max_steps_per_rollout
+        )
         return gain
 
-    def prune(self, max_shortcuts: int | None, **kwargs: Any) -> "GoalConditionedTrainingData":
+    def prune(
+        self, max_shortcuts: int | None, **kwargs: Any
+    ) -> "GoalConditionedTrainingData":
         """Prune shortcuts based on rollout length.
 
         Keeps only shortcuts where estimated distance < min(graph_distance, max_steps_per_rollout).
@@ -272,7 +296,9 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         if max_shortcuts is None:
             return self.training_data
 
-        print(f"\nPruning with rollouts (threshold={self.threshold}, max_shortcuts={max_shortcuts}):")
+        print(
+            f"\nPruning with rollouts (threshold={self.threshold}, max_shortcuts={max_shortcuts}):"
+        )
 
         # Compute success rates and select shortcuts (use unique_shortcuts for node-node pairs)
         score_tuples = []
@@ -281,17 +307,18 @@ class SmartRolloutsHeuristic(BaseHeuristic):
             g = self.estimate_gain(source_id, target_id)
             score = p * g
             score_tuples.append((source_id, target_id, score, p, g))
-        
+
         # Sort score tuples first by score, and then by probability
         score_tuples.sort(key=lambda x: (x[2], x[3]), reverse=True)
         print("  Shortcut scores (source -> target: score (prob, gain)):")
         for source_id, target_id, score, p, g in score_tuples:
             print(f"    ({source_id} -> {target_id}): {score:.4f} ({p:.2f}, {g:.2f})")
-        
+
         # Select top max_shortcuts shortcuts
         selected_shortcuts = score_tuples[:max_shortcuts]
         selected_unique_shortcuts = [
-            (source_id, target_id) for source_id, target_id, _, _, _ in selected_shortcuts
+            (source_id, target_id)
+            for source_id, target_id, _, _, _ in selected_shortcuts
         ]
 
         # Filter training data to match selected unique shortcuts
@@ -315,9 +342,13 @@ class SmartRolloutsHeuristic(BaseHeuristic):
 
         pruned_data = GoalConditionedTrainingData(
             states=[self.training_data.states[i] for i in selected_indices],
-            current_atoms=[self.training_data.current_atoms[i] for i in selected_indices],
+            current_atoms=[
+                self.training_data.current_atoms[i] for i in selected_indices
+            ],
             goal_atoms=[self.training_data.goal_atoms[i] for i in selected_indices],
-            valid_shortcuts=[self.training_data.valid_shortcuts[i] for i in selected_indices],
+            valid_shortcuts=[
+                self.training_data.valid_shortcuts[i] for i in selected_indices
+            ],
             unique_shortcuts=selected_unique_shortcuts,  # Unique node-node pairs
             node_states=self.training_data.node_states,  # Keep all node states
             node_atoms=self.training_data.node_atoms,  # Keep all node atoms
@@ -332,3 +363,18 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         )
 
         return pruned_data
+
+    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
+        """Get action to move from state toward target node.
+
+        Args:
+            obs: Current observation/state
+            target_node: Target node ID
+        Returns:
+            Action to take toward target node
+        """
+        
+        # raise an error
+        raise NotImplementedError(
+            "get_action is not implemented for SmartRolloutsHeuristic."
+        )

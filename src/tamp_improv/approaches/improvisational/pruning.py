@@ -1,13 +1,14 @@
 """Pruning methods for shortcut selection in SLAP.
 
-This module separates the pruning phase from data collection, allowing different
-pruning strategies to be applied to the same collected training data.
+This module separates the pruning phase from data collection, allowing
+different pruning strategies to be applied to the same collected
+training data.
 """
 
-from typing import Any
 from collections import defaultdict
-import gymnasium as gym
+from typing import Any
 
+import gymnasium as gym
 import numpy as np
 
 from tamp_improv.approaches.improvisational.distance_heuristic import (
@@ -20,7 +21,9 @@ from tamp_improv.approaches.improvisational.graph_training import (
     compute_graph_distances,
     identify_promising_shortcuts_with_rollouts,
 )
-from tamp_improv.approaches.improvisational.policies.base import GoalConditionedTrainingData
+from tamp_improv.approaches.improvisational.policies.base import (
+    GoalConditionedTrainingData,
+)
 from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
 
 
@@ -90,7 +93,9 @@ def train_distance_heuristic(
     )
 
     heuristic_training_steps = config.get("heuristic_training_steps", 50000)
-    heuristic.train(system.env, training_pairs, system.perceiver, heuristic_training_steps)
+    heuristic.train(
+        system.env, training_pairs, system.perceiver, heuristic_training_steps
+    )
 
     print("  Heuristic training complete")
     return heuristic
@@ -129,7 +134,9 @@ def prune_training_data(
     elif pruning_method == "random":
         return prune_random(training_data, max_shortcuts, rng)
     elif pruning_method == "rollouts":
-        pruned_data = prune_with_rollouts(training_data, system, planning_graph, config, rng)
+        pruned_data = prune_with_rollouts(
+            training_data, system, planning_graph, config, rng
+        )
         return prune_random(pruned_data, max_shortcuts, rng)
     elif pruning_method == "distance_heuristic":
         pruned_data = prune_with_distance_heuristic(
@@ -200,10 +207,16 @@ def prune_random(
 
     # Filter shortcut_info to match selected indices
     original_shortcut_info = training_data.config.get("shortcut_info", [])
-    pruned_shortcut_info = [original_shortcut_info[i] for i in selected_indices] if original_shortcut_info else []
+    pruned_shortcut_info = (
+        [original_shortcut_info[i] for i in selected_indices]
+        if original_shortcut_info
+        else []
+    )
 
     # Filter valid_shortcuts to only include selected node pairs (deduplicated)
-    selected_shortcuts_list = [training_data.valid_shortcuts[i] for i in selected_indices]
+    selected_shortcuts_list = [
+        training_data.valid_shortcuts[i] for i in selected_indices
+    ]
 
     # Create pruned training data
     pruned_data = GoalConditionedTrainingData(
@@ -225,7 +238,9 @@ def prune_random(
         node_atoms=training_data.node_atoms,
     )
 
-    print(f"Selected {len(selected_node_pairs)} node pairs ({len(selected_indices)} state pairs)")
+    print(
+        f"Selected {len(selected_node_pairs)} node pairs ({len(selected_indices)} state pairs)"
+    )
     return pruned_data
 
 
@@ -251,7 +266,6 @@ def prune_with_rollouts(
     Returns:
         Pruned training data with shortcuts that passed rollout tests
     """
-
 
     print("Pruning method: rollouts")
     num_rollouts_per_node = config.get("num_rollouts_per_node", 1000)
@@ -281,7 +295,7 @@ def prune_with_rollouts(
     else:
         print("Warning: Action space is not Box, using original action space.")
         sampling_space = raw_env.action_space
-    
+
     sampling_space.seed(seed)
 
     # Build node lookup for efficiency
@@ -302,13 +316,16 @@ def prune_with_rollouts(
         print(
             f"\nPerforming {rollouts_per_state} rollouts for each of "
             f"{len(source_states)} state(s) from node {source_id}",
-            flush=True
+            flush=True,
         )
 
         for state_idx, source_state in enumerate(source_states):
             for rollout_idx in range(rollouts_per_state):
                 if rollout_idx > 0 and rollout_idx % 100 == 0:
-                    print(f"  Completed {rollout_idx}/{rollouts_per_state} rollouts", flush=True)
+                    print(
+                        f"  Completed {rollout_idx}/{rollouts_per_state} rollouts",
+                        flush=True,
+                    )
 
                 # Reset to source state
                 raw_env.reset_from_state(source_state)
@@ -347,7 +364,10 @@ def prune_with_rollouts(
                         break
 
             # Print progress after each state
-            print(f"  Completed all rollouts for state {state_idx + 1}/{len(source_states)} from node {source_id}", flush=True)
+            print(
+                f"  Completed all rollouts for state {state_idx + 1}/{len(source_states)} from node {source_id}",
+                flush=True,
+            )
 
     print("\nRollout results:")
     for (source_id, target_id), count in shortcut_success_counts.items():
@@ -376,7 +396,11 @@ def prune_with_rollouts(
 
     # Filter shortcut_info to match the pruned data
     original_shortcut_info = training_data.config.get("shortcut_info", [])
-    pruned_shortcut_info = [original_shortcut_info[i] for i in selected_indices] if original_shortcut_info else []
+    pruned_shortcut_info = (
+        [original_shortcut_info[i] for i in selected_indices]
+        if original_shortcut_info
+        else []
+    )
 
     pruned_data = GoalConditionedTrainingData(
         states=[training_data.states[i] for i in selected_indices],
@@ -438,7 +462,7 @@ def prune_with_distance_heuristic(
     # Use heuristic_practical_horizon if specified, otherwise 2x max_training_steps_per_shortcut
     practical_horizon = config.get(
         "heuristic_practical_horizon",
-        2 * config.get("max_training_steps_per_shortcut", 50)
+        2 * config.get("max_training_steps_per_shortcut", 50),
     )
 
     # Extract heuristic training parameters for saving in config later
@@ -458,8 +482,12 @@ def prune_with_distance_heuristic(
     print("\nPreparing state pairs for shortcuts...")
 
     # Track all state pairs for training and evaluation
-    all_state_pairs = []  # List of (source_state, target_state, source_id, target_id, graph_dist)
-    node_pair_to_state_pairs = {}  # Map (source_id, target_id) -> list of state pair indices
+    all_state_pairs = (
+        []
+    )  # List of (source_state, target_state, source_id, target_id, graph_dist)
+    node_pair_to_state_pairs = (
+        {}
+    )  # Map (source_id, target_id) -> list of state pair indices
 
     for source_id, target_id in training_data.valid_shortcuts:
         if source_id not in training_data.node_states:
@@ -480,19 +508,25 @@ def prune_with_distance_heuristic(
         for source_state in source_states:
             for target_state in target_states:
                 state_pair_idx = len(all_state_pairs)
-                all_state_pairs.append({
-                    "source_state": source_state,
-                    "target_state": target_state,
-                    "source_id": source_id,
-                    "target_id": target_id,
-                    "graph_distance": graph_dist,
-                })
+                all_state_pairs.append(
+                    {
+                        "source_state": source_state,
+                        "target_state": target_state,
+                        "source_id": source_id,
+                        "target_id": target_id,
+                        "graph_distance": graph_dist,
+                    }
+                )
                 state_pair_indices.append(state_pair_idx)
 
         node_pair_to_state_pairs[(source_id, target_id)] = state_pair_indices
 
-    print(f"Prepared {len(all_state_pairs)} state pairs from {len(training_data.valid_shortcuts)} node pairs")
-    print(f"Average {len(all_state_pairs) / max(1, len(training_data.valid_shortcuts)):.1f} state pairs per node pair")
+    print(
+        f"Prepared {len(all_state_pairs)} state pairs from {len(training_data.valid_shortcuts)} node pairs"
+    )
+    print(
+        f"Average {len(all_state_pairs) / max(1, len(training_data.valid_shortcuts)):.1f} state pairs per node pair"
+    )
 
     # Step 3: Train distance heuristic (if not provided)
     if heuristic is None:
@@ -517,7 +551,9 @@ def prune_with_distance_heuristic(
         max_episode_steps=practical_horizon,
     )
 
-    print(f"Pruned {len(training_data.valid_shortcuts) - len(selected_node_pairs)} shortcuts")
+    print(
+        f"Pruned {len(training_data.valid_shortcuts) - len(selected_node_pairs)} shortcuts"
+    )
     print(f"Kept {len(selected_node_pairs)} shortcuts")
 
     # Convert to list for consistency with training data structure
@@ -536,7 +572,11 @@ def prune_with_distance_heuristic(
 
     # Filter shortcut_info to match selected indices
     original_shortcut_info = training_data.config.get("shortcut_info", [])
-    pruned_shortcut_info = [original_shortcut_info[i] for i in selected_indices] if original_shortcut_info else []
+    pruned_shortcut_info = (
+        [original_shortcut_info[i] for i in selected_indices]
+        if original_shortcut_info
+        else []
+    )
 
     pruned_data = GoalConditionedTrainingData(
         states=[training_data.states[i] for i in selected_indices],

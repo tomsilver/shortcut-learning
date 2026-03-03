@@ -1,8 +1,8 @@
 """Contrastive learning approach for TAMP using distance heuristic V4.
 
-This approach uses a single trained distance heuristic (V4) to create shortcuts
-between high-level nodes in the planning graph, rather than training separate
-RL policies for each shortcut.
+This approach uses a single trained distance heuristic (V4) to create
+shortcuts between high-level nodes in the planning graph, rather than
+training separate RL policies for each shortcut.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from tamp_improv.approaches.improvisational.base import ImprovisationalTAMPAppro
 from tamp_improv.approaches.improvisational.distance_heuristic_v4 import (
     DistanceHeuristicV4,
 )
-from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem, ObsType, ActType
+from tamp_improv.benchmarks.base import ActType, ImprovisationalTAMPSystem, ObsType
 
 
 class ContrastiveShortcutSkill(LiftedOperatorSkill[ObsType, ActType]):
@@ -90,9 +90,10 @@ class ContrastiveShortcutSkill(LiftedOperatorSkill[ObsType, ActType]):
 class ContrastiveApproach(ImprovisationalTAMPApproach[ObsType, ActType]):
     """TAMP approach using contrastive distance heuristic for shortcuts.
 
-    This approach extends ImprovisationalTAMPApproach but instead of training
-    separate RL policies for each shortcut, it uses a single trained distance
-    heuristic to create skills for navigating between nodes.
+    This approach extends ImprovisationalTAMPApproach but instead of
+    training separate RL policies for each shortcut, it uses a single
+    trained distance heuristic to create skills for navigating between
+    nodes.
     """
 
     def __init__(
@@ -149,7 +150,10 @@ class ContrastiveApproach(ImprovisationalTAMPApproach[ObsType, ActType]):
             all_objects.update(atom.objects)
 
         # Create variables for each unique object
-        parameters = [Variable(f"?{obj.name}", obj.type) for obj in sorted(all_objects, key=lambda o: o.name)]
+        parameters = [
+            Variable(f"?{obj.name}", obj.type)
+            for obj in sorted(all_objects, key=lambda o: o.name)
+        ]
 
         # If no objects found, this is likely an issue - but create a dummy variable
         if not parameters:
@@ -161,7 +165,10 @@ class ContrastiveApproach(ImprovisationalTAMPApproach[ObsType, ActType]):
                 raise ValueError("No types available in system components")
 
         # Create object -> variable mapping for lifting ground atoms
-        obj_to_var = {obj: var for obj, var in zip(sorted(all_objects, key=lambda o: o.name), parameters)}
+        obj_to_var = {
+            obj: var
+            for obj, var in zip(sorted(all_objects, key=lambda o: o.name), parameters)
+        }
 
         # Lift the ground atoms by replacing objects with variables
         def lift_atom(atom: GroundAtom) -> GroundAtom:
@@ -175,7 +182,9 @@ class ContrastiveApproach(ImprovisationalTAMPApproach[ObsType, ActType]):
 
         # Determine add and delete effects
         add_effects = lifted_target_atoms - lifted_source_atoms  # Atoms being ADDED
-        delete_effects = lifted_source_atoms - lifted_target_atoms  # Atoms being DELETED
+        delete_effects = (
+            lifted_source_atoms - lifted_target_atoms
+        )  # Atoms being DELETED
 
         # Create the shortcut operator
         shortcut_operator = LiftedOperator(
@@ -212,7 +221,9 @@ class ContrastiveApproach(ImprovisationalTAMPApproach[ObsType, ActType]):
 
         # Debug output for first few shortcuts
         if self._shortcut_count <= 5:
-            print(f"[DEBUG] Added shortcut {shortcut_name}: {len(source_atoms)} precond atoms -> {len(target_atoms)} target atoms, targeting node {target_node_id}")
+            print(
+                f"[DEBUG] Added shortcut {shortcut_name}: {len(source_atoms)} precond atoms -> {len(target_atoms)} target atoms, targeting node {target_node_id}"
+            )
             print(f"  Preconditions: {lifted_source_atoms}")
             print(f"  Add effects: {add_effects}")
             print(f"  Delete effects: {delete_effects}")
@@ -260,7 +271,13 @@ class ContrastiveApproach(ImprovisationalTAMPApproach[ObsType, ActType]):
 
                 if estimated_dist <= distance_threshold:
                     candidates.append(
-                        (estimated_dist, source_id, target_id, source_atoms, target_atoms)
+                        (
+                            estimated_dist,
+                            source_id,
+                            target_id,
+                            source_atoms,
+                            target_atoms,
+                        )
                     )
 
         # Sort by estimated distance (lowest first)

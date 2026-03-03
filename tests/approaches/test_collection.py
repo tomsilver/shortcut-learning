@@ -1,18 +1,18 @@
 """Tests for collection module."""
 
-import pytest
 import numpy as np
+import pytest
 
+from tamp_improv.approaches.improvisational.base import ImprovisationalTAMPApproach
 from tamp_improv.approaches.improvisational.collection import (
     collect_all_shortcuts,
     collect_shortcuts_single_episode,
     collect_total_planning_graph,
     collect_total_shortcuts,
 )
-from tamp_improv.approaches.improvisational.base import ImprovisationalTAMPApproach
 from tamp_improv.approaches.improvisational.policies.multi_rl import MultiRLPolicy
-from tamp_improv.benchmarks.obstacle2d_graph import GraphObstacle2DTAMPSystem
 from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem
+from tamp_improv.benchmarks.obstacle2d_graph import GraphObstacle2DTAMPSystem
 
 
 def test_collection_imports():
@@ -77,18 +77,16 @@ def test_collect_and_group_shortcuts():
     # Use rollout pruning like the pipeline does
     pruning_config = {**config, "pruning_method": "rollouts"}
     pruned_data = prune_training_data(
-        train_data,
-        system,
-        approach.planning_graph,
-        pruning_config,
-        rng
+        train_data, system, approach.planning_graph, pruning_config, rng
     )
 
     # pruned_data = train_data
 
     print(f"\nAfter pruning:")
     print(f"  Training examples: {len(pruned_data.states)}")
-    print(f"  Shortcut info entries: {len(pruned_data.config.get('shortcut_info', []))}")
+    print(
+        f"  Shortcut info entries: {len(pruned_data.config.get('shortcut_info', []))}"
+    )
 
     # Now test grouping with MultiRLPolicy on PRUNED data
     print("\n" + "=" * 80)
@@ -103,7 +101,9 @@ def test_collect_and_group_shortcuts():
     print(f"\nGrouping results:")
     print(f"  Number of unique policy keys: {len(grouped)}")
     print(f"  Total training examples: {len(pruned_data.states)}")
-    print(f"  Average examples per policy: {len(pruned_data.states) / len(grouped):.2f}")
+    print(
+        f"  Average examples per policy: {len(pruned_data.states) / len(grouped):.2f}"
+    )
 
     # Show all policy keys and their counts
     print("\nPolicy keys and example counts:")
@@ -139,7 +139,8 @@ def test_collect_and_group_shortcuts():
 
 
 def test_collect_total_planning_graph():
-    """Test that collect_total_planning_graph builds a unified graph across episodes."""
+    """Test that collect_total_planning_graph builds a unified graph across
+    episodes."""
     print("\n" + "=" * 80)
     print("TESTING COLLECT_TOTAL_PLANNING_GRAPH")
     print("=" * 80)
@@ -157,7 +158,7 @@ def test_collect_total_planning_graph():
     #     seed=config["seed"],
     #     render_mode=config.get("render_mode"),
     # )
-    
+
     # Use a gridworld system
     system = GridworldTAMPSystem.create_default(
         num_cells=10,
@@ -171,14 +172,16 @@ def test_collect_total_planning_graph():
         system=system,
         collect_episodes=config["collect_episodes"],
         seed=config["seed"],
-        planner_id="pyperplan"
+        planner_id="pyperplan",
     )
 
     print(f"\nTotal Graph Stats:")
     print(f"  Nodes: {len(total_graph.nodes)}")
     print(f"  Edges: {len(total_graph.edges)}")
     print(f"  Unique atom sets: {len(node_states)}")
-    print(f"  Total states collected: {sum(len(states) for states in node_states.values())}")
+    print(
+        f"  Total states collected: {sum(len(states) for states in node_states.values())}"
+    )
 
     # Verify basic properties
     assert len(total_graph.nodes) > 0, "Should have collected some nodes"
@@ -195,8 +198,9 @@ def test_collect_total_planning_graph():
     print(f"  Intersection: {len(graph_atom_sets & state_atom_sets)}")
 
     # All state atom sets should be in the graph
-    assert state_atom_sets.issubset(graph_atom_sets), \
-        "All states should correspond to nodes in the graph"
+    assert state_atom_sets.issubset(
+        graph_atom_sets
+    ), "All states should correspond to nodes in the graph"
 
     # Show some example atom sets and state counts
     print(f"\nExample atom sets and state counts:")
@@ -229,10 +233,10 @@ def test_collect_total_planning_graph():
     print(f"\nVerifying atom-based node identity:")
     for node in list(total_graph.nodes)[:3]:
         # Check that we can look up the node by its atoms
-        assert node.atoms in total_graph.node_map, \
-            "Node should be in node_map by atoms"
-        assert total_graph.node_map[node.atoms] == node, \
-            "node_map lookup should return the same node"
+        assert node.atoms in total_graph.node_map, "Node should be in node_map by atoms"
+        assert (
+            total_graph.node_map[node.atoms] == node
+        ), "node_map lookup should return the same node"
         print(f"  ✓ Node {node.id} with {len(node.atoms)} atoms: lookup works")
 
     print("\n✓ Total planning graph collection test passed!")
@@ -283,15 +287,18 @@ def test_collect_total_shortcuts():
     assert train_data.config.get("collection_method") == "total_shortcuts"
 
     # Verify data consistency
-    assert len(train_data.states) == len(train_data.current_atoms), \
-        "States and current_atoms should match"
-    assert len(train_data.states) == len(train_data.goal_atoms), \
-        "States and goal_atoms should match"
+    assert len(train_data.states) == len(
+        train_data.current_atoms
+    ), "States and current_atoms should match"
+    assert len(train_data.states) == len(
+        train_data.goal_atoms
+    ), "States and goal_atoms should match"
 
     # Verify shortcut_info matches states
     shortcut_info = train_data.config.get("shortcut_info", [])
-    assert len(shortcut_info) == len(train_data.states), \
-        "Shortcut info should match number of training examples"
+    assert len(shortcut_info) == len(
+        train_data.states
+    ), "Shortcut info should match number of training examples"
 
     # Show some example shortcuts
     print(f"\nFirst 5 shortcuts:")
@@ -301,8 +308,10 @@ def test_collect_total_shortcuts():
 
     # Check that approach has the planning graph stored
     assert approach.planning_graph is not None, "Approach should have planning graph"
-    print(f"\nApproach planning graph: {len(approach.planning_graph.nodes)} nodes, "
-          f"{len(approach.planning_graph.edges)} edges")
+    print(
+        f"\nApproach planning graph: {len(approach.planning_graph.nodes)} nodes, "
+        f"{len(approach.planning_graph.edges)} edges"
+    )
 
     # Check trained signatures were registered
     print(f"Trained signatures registered: {len(approach.trained_signatures)}")

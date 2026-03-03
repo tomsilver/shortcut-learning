@@ -6,8 +6,13 @@ from typing import TYPE_CHECKING, Any
 import gymnasium as gym
 import numpy as np
 
-from tamp_improv.approaches.improvisational.heuristics.base import BaseHeuristic, random_selection
-from tamp_improv.approaches.improvisational.policies.base import GoalConditionedTrainingData
+from tamp_improv.approaches.improvisational.heuristics.base import (
+    BaseHeuristic,
+    random_selection,
+)
+from tamp_improv.approaches.improvisational.policies.base import (
+    GoalConditionedTrainingData,
+)
 
 if TYPE_CHECKING:
     from tamp_improv.approaches.improvisational.policies.base import ObsType
@@ -17,10 +22,10 @@ if TYPE_CHECKING:
 class RolloutsHeuristic(BaseHeuristic):
     """Rollout-based heuristic for evaluating shortcuts.
 
-    This heuristic performs random rollouts from source nodes to evaluate
-    which target nodes are reachable. The rollouts are executed during
-    multi_train(), and the results (success counts) are cached for use
-    in estimate_node_distance() and prune().
+    This heuristic performs random rollouts from source nodes to
+    evaluate which target nodes are reachable. The rollouts are executed
+    during multi_train(), and the results (success counts) are cached
+    for use in estimate_node_distance() and prune().
 
     The success rate (0-1) indicates how often a target node is reached
     within the rollout horizon.
@@ -141,7 +146,10 @@ class RolloutsHeuristic(BaseHeuristic):
                     # Check if we've reached any target nodes
                     for target_id in self.training_data.node_states.keys():
                         # Skip if not a valid shortcut
-                        if (source_id, target_id) not in self.training_data.valid_shortcuts:
+                        if (
+                            source_id,
+                            target_id,
+                        ) not in self.training_data.valid_shortcuts:
                             continue
 
                         # Skip if already reached in this rollout
@@ -168,7 +176,9 @@ class RolloutsHeuristic(BaseHeuristic):
         print("\nRollout results:")
         for (source_id, target_id), count in shortcut_success_counts.items():
             success_rate = count / self.num_rollouts if self.num_rollouts > 0 else 0.0
-            print(f"  Shortcut ({source_id} -> {target_id}): {count} successes ({success_rate:.2%})")
+            print(
+                f"  Shortcut ({source_id} -> {target_id}): {count} successes ({success_rate:.2%})"
+            )
 
         # Store results
         self._success_counts = dict(shortcut_success_counts)
@@ -221,20 +231,26 @@ class RolloutsHeuristic(BaseHeuristic):
         """
         # print(self._success_counts, self._success_counts is None)
         if self._success_counts is None:
-            raise RuntimeError("Must call multi_train() before estimate_node_distance()")
+            raise RuntimeError(
+                "Must call multi_train() before estimate_node_distance()"
+            )
 
         # Get success count
         success_count = self._success_counts.get((source_node, target_node), 0)
 
         # Compute success rate
-        success_rate = success_count / self.num_rollouts if self.num_rollouts > 0 else 0.0
+        success_rate = (
+            success_count / self.num_rollouts if self.num_rollouts > 0 else 0.0
+        )
 
         # Return inverse scaled by max_steps (higher success = lower distance)
         distance = (1.0 - success_rate) * self.max_steps_per_rollout
 
         return distance
 
-    def prune(self, max_shortcuts: int | None, **kwargs: Any) -> "GoalConditionedTrainingData":
+    def prune(
+        self, max_shortcuts: int | None, **kwargs: Any
+    ) -> "GoalConditionedTrainingData":
         """Prune shortcuts based on rollout success rate.
 
         Keeps only shortcuts where success_rate >= threshold.
@@ -257,12 +273,16 @@ class RolloutsHeuristic(BaseHeuristic):
         selected_unique_shortcuts = []
         for source_id, target_id in self.training_data.unique_shortcuts:
             success_count = self._success_counts.get((source_id, target_id), 0)
-            success_rate = success_count / self.num_rollouts if self.num_rollouts > 0 else 0.0
+            success_rate = (
+                success_count / self.num_rollouts if self.num_rollouts > 0 else 0.0
+            )
 
             if success_rate >= threshold:
                 selected_unique_shortcuts.append((source_id, target_id))
 
-        pruned_count = len(self.training_data.unique_shortcuts) - len(selected_unique_shortcuts)
+        pruned_count = len(self.training_data.unique_shortcuts) - len(
+            selected_unique_shortcuts
+        )
         print(f"Pruned {pruned_count} unique shortcuts")
         print(f"Kept {len(selected_unique_shortcuts)} unique shortcuts")
 
@@ -287,9 +307,13 @@ class RolloutsHeuristic(BaseHeuristic):
 
         pruned_data = GoalConditionedTrainingData(
             states=[self.training_data.states[i] for i in selected_indices],
-            current_atoms=[self.training_data.current_atoms[i] for i in selected_indices],
+            current_atoms=[
+                self.training_data.current_atoms[i] for i in selected_indices
+            ],
             goal_atoms=[self.training_data.goal_atoms[i] for i in selected_indices],
-            valid_shortcuts=[self.training_data.valid_shortcuts[i] for i in selected_indices],
+            valid_shortcuts=[
+                self.training_data.valid_shortcuts[i] for i in selected_indices
+            ],
             unique_shortcuts=selected_unique_shortcuts,  # Unique node-node pairs
             node_states=self.training_data.node_states,  # Keep all node states
             node_atoms=self.training_data.node_atoms,  # Keep all node atoms
@@ -307,4 +331,19 @@ class RolloutsHeuristic(BaseHeuristic):
             pruned_data,
             max_shortcuts=max_shortcuts,
             rng=self.rng,
+        )
+
+    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
+        """Get action to move from state toward target node.
+
+        Args:
+            obs: Current observation/state
+            target_node: Target node ID
+        Returns:
+            Action to take toward target node
+        """
+        
+        # raise an error
+        raise NotImplementedError(
+            "get_action is not implemented for RolloutsHeuristic."
         )

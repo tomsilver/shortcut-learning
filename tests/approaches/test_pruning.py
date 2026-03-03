@@ -3,25 +3,28 @@
 import numpy as np
 import pytest
 
+from tamp_improv.approaches.improvisational.base import ImprovisationalTAMPApproach
+from tamp_improv.approaches.improvisational.collection import collect_total_shortcuts
 from tamp_improv.approaches.improvisational.graph import (
     GroundAtom,
     PlanningGraph,
     PlanningGraphEdge,
     PlanningGraphNode,
 )
-from tamp_improv.benchmarks.base import Predicate
-from tamp_improv.approaches.improvisational.policies.base import GoalConditionedTrainingData
+from tamp_improv.approaches.improvisational.policies.base import (
+    GoalConditionedTrainingData,
+)
+from tamp_improv.approaches.improvisational.policies.multi_rl import MultiRLPolicy
 from tamp_improv.approaches.improvisational.pruning import (
     prune_none,
     prune_random,
     prune_training_data,
     prune_with_rollouts,
 )
-from tamp_improv.approaches.improvisational.collection import collect_total_shortcuts
-from tamp_improv.approaches.improvisational.base import ImprovisationalTAMPApproach
-from tamp_improv.approaches.improvisational.policies.multi_rl import MultiRLPolicy
-from tamp_improv.benchmarks.obstacle2d_graph import GraphObstacle2DTAMPSystem
+from tamp_improv.benchmarks.base import Predicate
 from tamp_improv.benchmarks.gridworld import GridworldTAMPSystem
+from tamp_improv.benchmarks.obstacle2d_graph import GraphObstacle2DTAMPSystem
+
 
 def _make_test_atom(name: str) -> GroundAtom:
     """Create a test ground atom with a given name."""
@@ -34,12 +37,24 @@ def test_prune_none():
     # Create minimal training data
     training_data = GoalConditionedTrainingData(
         states=["state1", "state2", "state3"],
-        current_atoms=[{_make_test_atom("a")}, {_make_test_atom("b")}, {_make_test_atom("c")}],
-        goal_atoms=[{_make_test_atom("b")}, {_make_test_atom("c")}, {_make_test_atom("d")}],
+        current_atoms=[
+            {_make_test_atom("a")},
+            {_make_test_atom("b")},
+            {_make_test_atom("c")},
+        ],
+        goal_atoms=[
+            {_make_test_atom("b")},
+            {_make_test_atom("c")},
+            {_make_test_atom("d")},
+        ],
         config={},
         node_states={0: ["state1"], 1: ["state2"], 2: ["state3"]},
         valid_shortcuts=[(0, 1), (0, 2), (1, 2)],
-        node_atoms={0: {_make_test_atom("a")}, 1: {_make_test_atom("b")}, 2: {_make_test_atom("c")}},
+        node_atoms={
+            0: {_make_test_atom("a")},
+            1: {_make_test_atom("b")},
+            2: {_make_test_atom("c")},
+        },
     )
 
     result = prune_none(training_data)
@@ -80,12 +95,24 @@ def test_prune_random_under_limit():
     # Create training data with 3 shortcuts
     training_data = GoalConditionedTrainingData(
         states=["state1", "state2", "state3"],
-        current_atoms=[{_make_test_atom("a")}, {_make_test_atom("b")}, {_make_test_atom("c")}],
-        goal_atoms=[{_make_test_atom("b")}, {_make_test_atom("c")}, {_make_test_atom("d")}],
+        current_atoms=[
+            {_make_test_atom("a")},
+            {_make_test_atom("b")},
+            {_make_test_atom("c")},
+        ],
+        goal_atoms=[
+            {_make_test_atom("b")},
+            {_make_test_atom("c")},
+            {_make_test_atom("d")},
+        ],
         config={},
         node_states={0: ["state1"], 1: ["state2"], 2: ["state3"]},
         valid_shortcuts=[(0, 1), (0, 2), (1, 2)],
-        node_atoms={0: {_make_test_atom("a")}, 1: {_make_test_atom("b")}, 2: {_make_test_atom("c")}},
+        node_atoms={
+            0: {_make_test_atom("a")},
+            1: {_make_test_atom("b")},
+            2: {_make_test_atom("c")},
+        },
     )
 
     # Try to prune to 10 shortcuts (but only 3 exist)
@@ -107,7 +134,11 @@ def test_prune_training_data_dispatch():
         config={},
         node_states={0: ["state1"], 1: ["state2"], 2: ["state3"]},
         valid_shortcuts=[(0, 1), (1, 2)],  # 2 different node pairs
-        node_atoms={0: {_make_test_atom("a")}, 1: {_make_test_atom("b")}, 2: {_make_test_atom("c")}},
+        node_atoms={
+            0: {_make_test_atom("a")},
+            1: {_make_test_atom("b")},
+            2: {_make_test_atom("c")},
+        },
     )
 
     # Create minimal planning graph
@@ -161,9 +192,10 @@ def test_prune_training_data_unknown_method():
 def test_pruning_preserves_multiple_states_per_node_pair():
     """Test that pruning operates on node pairs, not state pairs.
 
-    If a node pair (A, B) has multiple training examples (different states),
-    then pruning should either keep ALL of them or remove ALL of them.
-    It should NOT split them up by treating each state pair independently.
+    If a node pair (A, B) has multiple training examples (different
+    states), then pruning should either keep ALL of them or remove ALL
+    of them. It should NOT split them up by treating each state pair
+    independently.
     """
     rng = np.random.default_rng(42)
 
@@ -171,17 +203,25 @@ def test_pruning_preserves_multiple_states_per_node_pair():
     # This simulates: node 0 has 2 states, node 1 has 1 state
     training_data = GoalConditionedTrainingData(
         states=["state0a", "state0b"],  # 2 states for the same shortcut
-        current_atoms=[{_make_test_atom("a")}, {_make_test_atom("a")}],  # Same source node
+        current_atoms=[
+            {_make_test_atom("a")},
+            {_make_test_atom("a")},
+        ],  # Same source node
         goal_atoms=[{_make_test_atom("b")}, {_make_test_atom("b")}],  # Same target node
-        config={"shortcut_info": [
-            {"source_node_id": 0, "target_node_id": 1},
-            {"source_node_id": 0, "target_node_id": 1},
-        ]},
+        config={
+            "shortcut_info": [
+                {"source_node_id": 0, "target_node_id": 1},
+                {"source_node_id": 0, "target_node_id": 1},
+            ]
+        },
         node_states={
             0: ["state0a", "state0b"],  # Node 0 has 2 states
             1: ["state1"],  # Node 1 has 1 state
         },
-        valid_shortcuts=[(0, 1), (0, 1)],  # Same node pair appears twice (once per state)
+        valid_shortcuts=[
+            (0, 1),
+            (0, 1),
+        ],  # Same node pair appears twice (once per state)
         node_atoms={
             0: {_make_test_atom("a")},
             1: {_make_test_atom("b")},
@@ -205,8 +245,11 @@ def test_pruning_preserves_multiple_states_per_node_pair():
     # The bug would cause this to be 1 (treating state pairs independently)
     # The correct behavior should give us 2 (keeping all states for the node pair)
     # or 0 (rejecting the entire node pair)
-    assert len(result.states) in [0, 2], \
-        f"Expected 0 or 2 states (pruning by node pair), got {len(result.states)}"
+    assert len(result.states) in [
+        0,
+        2,
+    ], f"Expected 0 or 2 states (pruning by node pair), got {len(result.states)}"
+
 
 def test_prune_total_shortcuts():
     """Test collect_total_shortcuts on gridworld."""
@@ -253,15 +296,18 @@ def test_prune_total_shortcuts():
     assert train_data.config.get("collection_method") == "total_shortcuts"
 
     # Verify data consistency
-    assert len(train_data.states) == len(train_data.current_atoms), \
-        "States and current_atoms should match"
-    assert len(train_data.states) == len(train_data.goal_atoms), \
-        "States and goal_atoms should match"
+    assert len(train_data.states) == len(
+        train_data.current_atoms
+    ), "States and current_atoms should match"
+    assert len(train_data.states) == len(
+        train_data.goal_atoms
+    ), "States and goal_atoms should match"
 
     # Verify shortcut_info matches states
     shortcut_info = train_data.config.get("shortcut_info", [])
-    assert len(shortcut_info) == len(train_data.states), \
-        "Shortcut info should match number of training examples"
+    assert len(shortcut_info) == len(
+        train_data.states
+    ), "Shortcut info should match number of training examples"
 
     # Show some example shortcuts
     print(f"\nFirst 5 shortcuts:")
@@ -269,12 +315,12 @@ def test_prune_total_shortcuts():
         source_id, target_id = train_data.valid_shortcuts[i]
         print(f"  {i+1}. Node {source_id} -> Node {target_id}")
 
-    
     # prune with rollouts
     print("\nPruning training data with rollouts...")
 
     # Count state pairs per node pair before pruning
     from collections import Counter
+
     original_node_pair_counts = Counter(train_data.valid_shortcuts)
     print(f"\nNode pair distribution before pruning:")
     for (src, tgt), count in sorted(original_node_pair_counts.items()):
@@ -311,11 +357,13 @@ def test_prune_total_shortcuts():
 
         # KEY ASSERTION: If a node pair survived pruning,
         # it should have the SAME number of state pairs as before
-        assert count == original_count, \
-            f"Node pair ({src}, {tgt}) had {original_count} state pairs before " \
+        assert count == original_count, (
+            f"Node pair ({src}, {tgt}) had {original_count} state pairs before "
             f"pruning but {count} after - state pairs were split!"
+        )
 
     print("\n✓ test_prune_total_shortcuts passed!")
+
 
 if __name__ == "__main__":
     # test_prune_none()

@@ -64,11 +64,13 @@ def test_gridworld_env_initialization():
     # Check portal positions are within their assigned cells
     portal_start_cell = portal_start // env.num_states_per_cell
     portal_end_cell = portal_end // env.num_states_per_cell
-    assert tuple(portal_start_cell) == start_cell, "Start portal should be in start cell"
+    assert (
+        tuple(portal_start_cell) == start_cell
+    ), "Start portal should be in start cell"
     assert tuple(portal_end_cell) == end_cell, "End portal should be in end cell"
 
     # Check observation is a GraphInstance
-    assert hasattr(obs, 'nodes'), "Observation should be a GraphInstance"
+    assert hasattr(obs, "nodes"), "Observation should be a GraphInstance"
     print(f"\nObservation graph:")
     print(f"  Number of nodes: {len(obs.nodes)}")
     print(f"  Node shapes: {obs.nodes.shape}")
@@ -98,8 +100,9 @@ def test_gridworld_portal_consistency():
         obs, info = env.reset(seed=100 + episode)
 
         # Portal cell pairs should remain the same
-        assert env.portal_cell_pairs == initial_pairs, \
-            f"Portal cell pairs changed on episode {episode}"
+        assert (
+            env.portal_cell_pairs == initial_pairs
+        ), f"Portal cell pairs changed on episode {episode}"
 
         # But portal positions should vary
         portal_positions = env.portals
@@ -107,14 +110,16 @@ def test_gridworld_portal_consistency():
         for i, (start_pos, end_pos) in enumerate(portal_positions):
             start_cell = tuple(start_pos // env.num_states_per_cell)
             end_cell = tuple(end_pos // env.num_states_per_cell)
-            print(f"  Portal {i}: {start_pos} (cell {start_cell}) → {end_pos} (cell {end_cell})")
+            print(
+                f"  Portal {i}: {start_pos} (cell {start_cell}) → {end_pos} (cell {end_cell})"
+            )
 
             # Verify positions are in correct cells
             expected_start_cell, expected_end_cell = initial_pairs[i]
-            assert start_cell == expected_start_cell, \
-                f"Start portal {i} not in expected cell"
-            assert end_cell == expected_end_cell, \
-                f"End portal {i} not in expected cell"
+            assert (
+                start_cell == expected_start_cell
+            ), f"Start portal {i} not in expected cell"
+            assert end_cell == expected_end_cell, f"End portal {i} not in expected cell"
 
     print("\n✓ Portal consistency test passed!")
 
@@ -145,16 +150,18 @@ def test_gridworld_teleport_action():
     print(f"Expected: {portal_end}")
 
     # Robot should now be at end portal
-    assert np.array_equal(env.robot_pos, portal_end), \
-        "Robot should teleport to end portal"
+    assert np.array_equal(
+        env.robot_pos, portal_end
+    ), "Robot should teleport to end portal"
 
     # Teleport back
     obs, reward, terminated, truncated, info = env.step(4)
     print(f"After teleport back: {env.robot_pos}")
 
     # Robot should be back at start portal
-    assert np.array_equal(env.robot_pos, portal_start), \
-        "Robot should teleport back to start portal"
+    assert np.array_equal(
+        env.robot_pos, portal_start
+    ), "Robot should teleport back to start portal"
 
     # Test teleport from non-portal location (should have no effect)
     env.robot_pos = np.array([2, 2])
@@ -165,8 +172,9 @@ def test_gridworld_teleport_action():
     print(f"After teleport attempt: {env.robot_pos}")
 
     # Robot should not move
-    assert np.array_equal(env.robot_pos, non_portal_pos), \
-        "Teleport from non-portal position should have no effect"
+    assert np.array_equal(
+        env.robot_pos, non_portal_pos
+    ), "Teleport from non-portal position should have no effect"
 
     print("\n✓ Teleport action test passed!")
 
@@ -196,19 +204,19 @@ def test_gridworld_system_initialization():
     print(f"\nPredicates: {sorted(pred_names)}")
 
     # Should have InRow0, InRow1, InCol0, InCol1, GoalReached
-    assert 'InRow0' in pred_names, "Should have InRow0 predicate"
-    assert 'InRow1' in pred_names, "Should have InRow1 predicate"
-    assert 'InCol0' in pred_names, "Should have InCol0 predicate"
-    assert 'InCol1' in pred_names, "Should have InCol1 predicate"
-    assert 'GoalReached' in pred_names, "Should have GoalReached predicate"
+    assert "InRow0" in pred_names, "Should have InRow0 predicate"
+    assert "InRow1" in pred_names, "Should have InRow1 predicate"
+    assert "InCol0" in pred_names, "Should have InCol0 predicate"
+    assert "InCol1" in pred_names, "Should have InCol1 predicate"
+    assert "GoalReached" in pred_names, "Should have GoalReached predicate"
 
     # Check skills
-    skill_names = {s._lifted_operator.name.split('_')[0] for s in system.skills}
+    skill_names = {s._lifted_operator.name.split("_")[0] for s in system.skills}
     print(f"\nSkill types: {sorted(skill_names)}")
 
-    assert 'MoveUp' in skill_names, "Should have MoveUp skill"
-    assert 'MoveRight' in skill_names, "Should have MoveRight skill"
-    assert 'NavigateToGoal' in skill_names, "Should have NavigateToGoal skill"
+    assert "MoveUp" in skill_names, "Should have MoveUp skill"
+    assert "MoveRight" in skill_names, "Should have MoveRight skill"
+    assert "NavigateToGoal" in skill_names, "Should have NavigateToGoal skill"
 
     # Reset and check perceiver
     obs, info = system.reset(seed=123)
@@ -221,14 +229,14 @@ def test_gridworld_system_initialization():
 
     # Check initial atoms
     atom_strs = {str(a) for a in atoms}
-    assert '(InRow0 robot0)' in atom_strs, "Robot should be in row 0"
-    assert '(InCol0 robot0)' in atom_strs, "Robot should be in col 0"
+    assert "(InRow0 robot0)" in atom_strs, "Robot should be in row 0"
+    assert "(InCol0 robot0)" in atom_strs, "Robot should be in col 0"
 
     # Check goal atoms
     goal_strs = {str(a) for a in goal}
-    assert '(InRow1 robot0)' in goal_strs, "Goal should be in row 1"
-    assert '(InCol1 robot0)' in goal_strs, "Goal should be in col 1"
-    assert '(GoalReached robot0)' in goal_strs, "Goal should include GoalReached"
+    assert "(InRow1 robot0)" in goal_strs, "Goal should be in row 1"
+    assert "(InCol1 robot0)" in goal_strs, "Goal should be in col 1"
+    assert "(GoalReached robot0)" in goal_strs, "Goal should include GoalReached"
 
     print("\n✓ System initialization test passed!")
 

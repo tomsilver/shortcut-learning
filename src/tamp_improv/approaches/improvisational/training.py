@@ -143,6 +143,13 @@ def get_or_collect_training_data(
     return train_data
 
 
+def _flatten_obs(obs: Any) -> list[float]:
+    """Flatten an observation to a list of floats for trajectory recording."""
+    if hasattr(obs, "nodes"):
+        return obs.nodes.flatten().astype(np.float32).tolist()
+    return np.array(obs).flatten().astype(np.float32).tolist()
+
+
 def run_evaluation_episode(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
     approach: Union[
@@ -175,18 +182,47 @@ def run_evaluation_episode(
     obs, info = system.reset()
     step_result = approach.reset(obs, info)
 
+    trajectory_positions: list[list[float]] = [_flatten_obs(obs)]
+
     total_reward = 0.0
     step_count = 0
     success = False
     episode_info: dict[str, Any] = {
-        "initial_node": approach.initial_node_id if hasattr(approach, "initial_node_id") else None,
-        "goal_nodes": approach.goal_node_ids if hasattr(approach, "goal_node_ids") else None,
-        "optimal_path_nodes": approach.best_eval_path_node_ids if hasattr(approach, "best_eval_path_node_ids") else None,
-        "optimal_path_edges": approach.best_eval_path_edge_details if hasattr(approach, "best_eval_path_edge_details") else None,
-        "shortcuts_added": approach.shortcuts_added_to_graph if hasattr(approach, "shortcuts_added_to_graph") else 0,
+        "initial_node": (
+            approach.initial_node_id if hasattr(approach, "initial_node_id") else None
+        ),
+        "goal_nodes": (
+            approach.goal_node_ids if hasattr(approach, "goal_node_ids") else None
+        ),
+        "initial_node_atoms": (
+            list(approach.initial_node_atoms)
+            if hasattr(approach, "initial_node_atoms")
+            else []
+        ),
+        "goal_node_atoms_list": (
+            [list(a) for a in approach.goal_node_atoms_list]
+            if hasattr(approach, "goal_node_atoms_list")
+            else []
+        ),
+        "optimal_path_nodes": (
+            approach.best_eval_path_node_ids
+            if hasattr(approach, "best_eval_path_node_ids")
+            else None
+        ),
+        "optimal_path_edges": (
+            approach.best_eval_path_edge_details
+            if hasattr(approach, "best_eval_path_edge_details")
+            else None
+        ),
+        "shortcuts_added": (
+            approach.shortcuts_added_to_graph
+            if hasattr(approach, "shortcuts_added_to_graph")
+            else 0
+        ),
         "success": False,
         "true_steps": 0,
         "reward": 0.0,
+        "trajectory_positions": [],
     }
 
     # Check for early termination cases from reset
@@ -205,10 +241,12 @@ def run_evaluation_episode(
         episode_info["success"] = success
         episode_info["true_steps"] = step_count
         episode_info["reward"] = total_reward
+        episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
 
     # Execute first action from the reset
     obs, reward, terminated, truncated, info = system.env.step(step_result.action)
+    trajectory_positions.append(_flatten_obs(obs))
     total_reward += float(reward)
     step_count += 1
     if step_result.terminate or terminated or truncated:
@@ -219,12 +257,14 @@ def run_evaluation_episode(
         episode_info["success"] = success
         episode_info["true_steps"] = step_count
         episode_info["reward"] = total_reward
+        episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
 
     # Rest of steps
     for _ in range(1, config.eval_max_steps):
         step_result = approach.step(obs, total_reward, False, False, info)
         obs, reward, terminated, truncated, info = system.env.step(step_result.action)
+        trajectory_positions.append(_flatten_obs(obs))
         total_reward += float(reward)
         step_count += 1
         if step_result.terminate or terminated or truncated:
@@ -240,6 +280,7 @@ def run_evaluation_episode(
     episode_info["success"] = success
     episode_info["true_steps"] = step_count
     episode_info["reward"] = total_reward
+    episode_info["trajectory_positions"] = trajectory_positions
     return total_reward, step_count, success, episode_info
 
 
@@ -272,11 +313,37 @@ def run_evaluation_episode_with_caching(
     step_count = 0
     success = False
     episode_info: dict[str, Any] = {
-        "initial_node": approach.initial_node_id if hasattr(approach, "initial_node_id") else None,
-        "goal_nodes": approach.goal_node_ids if hasattr(approach, "goal_node_ids") else None,
-        "optimal_path_nodes": approach.best_eval_path_node_ids if hasattr(approach, "best_eval_path_node_ids") else None,
-        "optimal_path_edges": approach.best_eval_path_edge_details if hasattr(approach, "best_eval_path_edge_details") else None,
-        "shortcuts_added": approach.shortcuts_added_to_graph if hasattr(approach, "shortcuts_added_to_graph") else 0,
+        "initial_node": (
+            approach.initial_node_id if hasattr(approach, "initial_node_id") else None
+        ),
+        "goal_nodes": (
+            approach.goal_node_ids if hasattr(approach, "goal_node_ids") else None
+        ),
+        "initial_node_atoms": (
+            list(approach.initial_node_atoms)
+            if hasattr(approach, "initial_node_atoms")
+            else []
+        ),
+        "goal_node_atoms_list": (
+            [list(a) for a in approach.goal_node_atoms_list]
+            if hasattr(approach, "goal_node_atoms_list")
+            else []
+        ),
+        "optimal_path_nodes": (
+            approach.best_eval_path_node_ids
+            if hasattr(approach, "best_eval_path_node_ids")
+            else None
+        ),
+        "optimal_path_edges": (
+            approach.best_eval_path_edge_details
+            if hasattr(approach, "best_eval_path_edge_details")
+            else None
+        ),
+        "shortcuts_added": (
+            approach.shortcuts_added_to_graph
+            if hasattr(approach, "shortcuts_added_to_graph")
+            else 0
+        ),
         "success": False,
         "true_steps": 0,
         "reward": 0.0,
