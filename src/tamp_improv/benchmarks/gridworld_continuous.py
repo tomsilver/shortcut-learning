@@ -74,6 +74,7 @@ class GridworldContinuousEnv(gym.Env):
         render_mode: str | None = None,
         max_episode_steps: int = 200,
         seed: int | None = None,
+        pacman: bool = False,
     ):
         """Initialize continuous gridworld.
 
@@ -86,6 +87,7 @@ class GridworldContinuousEnv(gym.Env):
             render_mode: Rendering mode
             max_episode_steps: Maximum steps before episode ends
             seed: Random seed for initializing portal locations
+            pacman: If True, moving off the left edge wraps to the right side
         """
         super().__init__()
         self.num_cells = num_cells
@@ -95,6 +97,7 @@ class GridworldContinuousEnv(gym.Env):
         self.num_teleporters = num_teleporters
         self.render_mode = render_mode
         self.max_episode_steps = max_episode_steps
+        self.pacman = pacman
 
         # Cell size
         self.cell_size = grid_size / num_cells
@@ -279,7 +282,12 @@ class GridworldContinuousEnv(gym.Env):
         # Apply velocity to position
         new_pos = self.robot_pos + action
 
-        # Clip to grid bounds
+        # Clip to grid bounds (with optional pacman wrapping on x axis)
+        if self.pacman:
+            if new_pos[0] < 0.0 or new_pos[0] >= self.grid_size:
+                old_x = new_pos[0]
+                new_pos[0] = new_pos[0] % self.grid_size
+                print(f"[PACMAN] wrap x={old_x:.3f} -> {new_pos[0]:.3f}")
         new_pos = np.clip(new_pos, 0.0, self.grid_size - 1e-6).astype(np.float32)
 
         self.robot_pos = new_pos
@@ -712,6 +720,7 @@ class GridworldContinuousTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, NDA
         seed: int | None = None,
         render_mode: str | None = None,
         max_episode_steps: int = 200,
+        pacman: bool = False,
     ):
         """Initialize gridworld continuous system."""
         self.num_cells = num_cells
@@ -720,6 +729,7 @@ class GridworldContinuousTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, NDA
         self.portal_radius = portal_radius
         self.num_teleporters = num_teleporters
         self.max_episode_steps = max_episode_steps
+        self.pacman = pacman
         self._env_seed = seed
         super().__init__(planning_components, seed=seed, render_mode=render_mode)
 
@@ -734,6 +744,7 @@ class GridworldContinuousTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, NDA
             render_mode=self._render_mode,
             max_episode_steps=self.max_episode_steps,
             seed=self._env_seed,
+            pacman=self.pacman,
         )
 
     def _create_wrapped_env(
@@ -770,6 +781,7 @@ class GridworldContinuousTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, NDA
         seed: int = 42,
         render_mode: str | None = None,
         max_episode_steps: int = 200,
+        pacman: bool = False,
     ) -> GridworldContinuousTAMPSystem:
         """Create default gridworld continuous system."""
         cell_size = grid_size / num_cells
@@ -866,4 +878,5 @@ class GridworldContinuousTAMPSystem(ImprovisationalTAMPSystem[GraphInstance, NDA
             seed=seed,
             render_mode=render_mode,
             max_episode_steps=max_episode_steps,
+            pacman=pacman,
         )

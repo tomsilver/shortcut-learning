@@ -84,6 +84,11 @@ class RolloutsHeuristic(BaseHeuristic):
         # Pre-compute target node atom sets from training_data.node_atoms
         self._target_atoms_by_id = dict(training_data.node_atoms)
 
+        # Pre-compute valid targets per source node as a set for O(1) lookup
+        self._valid_targets: dict[int, set[int]] = {}
+        for source_id, target_id in training_data.valid_shortcuts:
+            self._valid_targets.setdefault(source_id, set()).add(target_id)
+
     def multi_train(self, **kwargs: Any) -> dict[str, Any]:
         """Run rollouts to evaluate all shortcuts.
 
@@ -120,6 +125,7 @@ class RolloutsHeuristic(BaseHeuristic):
 
             # Sample from source_states exactly self.num_rollouts times
             for rollout_idx in range(self.num_rollouts):
+                print(f"Rollout {rollout_idx + 1}/{self.num_rollouts}", end="\r", flush=True)
                 if rollout_idx > 0 and rollout_idx % 100 == 0:
                     print(
                         f"  Completed {rollout_idx}/{self.num_rollouts} rollouts",
@@ -143,20 +149,9 @@ class RolloutsHeuristic(BaseHeuristic):
                     obs, _, terminated, truncated, _ = raw_env.step(action)
                     curr_atoms = self.system.perceiver.step(obs)
 
-                    # Check if we've reached any target nodes
-                    for target_id in self.training_data.node_states.keys():
-                        # Skip if not a valid shortcut
-                        if (
-                            source_id,
-                            target_id,
-                        ) not in self.training_data.valid_shortcuts:
-                            continue
-
-                        # Skip if already reached in this rollout
-                        if target_id in reached_in_this_rollout:
-                            continue
-
-                        # Check if atoms match target node
+                    # Check if we've reached any valid target nodes for this source
+                    valid_targets = self._valid_targets.get(source_id, set())
+                    for target_id in valid_targets - reached_in_this_rollout:
                         target_atoms = self._target_atoms_by_id.get(target_id)
                         if target_atoms and target_atoms == curr_atoms:
                             shortcut_success_counts[(source_id, target_id)] += 1
@@ -333,17 +328,16 @@ class RolloutsHeuristic(BaseHeuristic):
             rng=self.rng,
         )
 
-    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
-        """Get action to move from state toward target node.
+    def train_one_round(self) -> dict[str, Any]:
+        return self.multi_train()
 
-        Args:
-            obs: Current observation/state
-            target_node: Target node ID
-        Returns:
-            Action to take toward target node
-        """
-        
-        # raise an error
-        raise NotImplementedError(
-            "get_action is not implemented for RolloutsHeuristic."
-        )
+    def prune_by_success(
+        self, success_threshold: float, max_steps: int, **kwargs: Any
+    ) -> "GoalConditionedTrainingData":
+        raise NotImplementedError("RolloutsHeuristic does not support multi-round pruning.")
+
+    def update_system(self, **kwargs: Any) -> None:
+        raise NotImplementedError("RolloutsHeuristic does not support update_system.")
+
+    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
+        raise NotImplementedError("get_action is not implemented for RolloutsHeuristic.")

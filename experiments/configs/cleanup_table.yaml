@@ -1,30 +1,160 @@
-env_name: CleanupTableTAMPSystem
-render_mode: null
-action_scale: 0.005
-
 seed: 42
-num_episodes: 1
-max_steps: 600
-max_training_steps_per_shortcut: 300
-collect_episodes: 1
-episodes_per_scenario: 100
-force_collect: false
-render: false
-training_record_interval: 10
-batch_size: 16
+debug: false
+render_mode: null
+eval_heuristic_only: false
+wandb_enabled: false
 
-use_random_rollouts: true
-num_rollouts_per_node: 50
-max_steps_per_rollout: 300
-shortcut_success_threshold: 2
+env:
+  name: CleanupTableTAMPSystem
+  # Gridworld
+  num_cells: 5
+  num_states_per_cell: 10
+  num_teleporters: 0
+  pacman: false
 
-learning_rate: 3.0e-4
-rl_batch_size: 16
-n_epochs: 10
-gamma: 0.99
-ent_coef: 0.01
-deterministic: false
+  # Blocks
+  n_blocks: 2
+  num_obstacle_blocks: 3
 
-training_data_dir: training_data/multi_rl
-save_dir: trained_policies/multi_rl
-policy_path: trained_policies/multi_rl/CleanupTableTAMPSystem_MultiRL
+
+
+collection:
+  num_episodes: 10
+  max_steps_per_edge: 600
+  planner_id: pyperplan
+  num_cost_rollouts: 100
+  load_data: false
+  training_data_path: null
+
+heuristic:
+  # Heuristic Parameters
+  type: crl_v2
+
+  # Pruning Parameters
+  max_shortcuts_per_graph: 10
+
+  # Multi-train parameters
+  num_rounds: 1
+  success_threshold: 0.90
+
+
+  # Rollout Heuristic Parameters, R = 10 * 144 = 1440
+  rollouts:
+    use_random_rollouts: true
+    num_rollouts_per_node: 10
+    max_steps_per_rollout: 600
+    max_episode_steps: 600
+    action_scale: 0.005
+    success_threshold: 0.04
+    gain_method: exact
+    auto_dist_scale: true
+    dist_scale: 1.0
+    dist_quantile: 0.9
+
+  # CRL Heuristic Parameters (both v1 and v2)
+  crl:
+    hidden_dims: [64, 64]
+    latent_dim: 16
+    normalize_embeddings: true
+    learning_rate: 1e-3
+    batch_size: 64
+    buffer_size: 100000
+    gamma: 0.99
+    repetition_factor: 2
+    policy_temperature: 0.3
+    iters_per_epoch: 10
+    learn_frequency: 1
+    gain_update_frequency: 10
+    node_distance_samples: 5
+
+    num_epochs_per_round: 150  # Epochs per round (used as num_epochs_per_round in multi_train)
+    trajectories_per_epoch: 10
+    max_episode_steps: 600
+
+    # CRL V2 specific parameters
+    actor_hidden_dims: [64, 64]
+    goal_encoder_hidden_dims: [32]
+    critic_lr: 3e-4
+    actor_lr: 3e-4
+    max_atom_size: 60
+    grad_clip: 1.0
+
+    ucb_beta: 100  # UCB exploration parameter
+    sampling_method: uniform  # Options: uniform, ucb
+    gain_method: exact # Options: exact, estimate, naive
+    dist_scale: 1.0  # Scaling factor for distance in gain calculation
+    dist_quantile: 0.9  # Quantile for distance scaling when computing gains
+    auto_dist_scale: true  # Whether to automatically set dist_scale based on quantile
+    residualize: false  # Whether to residualize actor actions with base skill actions
+
+    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+
+  # SAC V2 heuristic parameters
+  sac:
+    actor_lr: 3e-4
+    critic_lr: 3e-4
+    hidden_dims: [64, 64]
+    actor_hidden_dims: [64, 64]
+    batch_size: 64
+    buffer_size: 100000
+    gamma: 0.99
+    tau: 0.005
+    target_update_interval: 1
+    auto_entropy: true
+    init_temperature: 0.2
+    her_n_sampled_goal: 4
+    her_strategy: future
+    trajectories_per_epoch: 10
+    num_epochs_per_round: 150
+    max_episode_steps: 600
+    learn_frequency: 1
+    gain_update_frequency: 10
+    medoid_update_frequency: 10
+    iters_per_epoch: 100
+    grad_clip: 1.0
+    log_alpha_min: -5.0
+    num_rounds: 1
+    keep_fraction: 0.2
+    exploration_factor: 0.05
+    threshold: 0.05
+    beta: 1.0
+    sampling_method: uniform
+    ucb_beta: 1.0
+    gain_method: exact
+    dist_scale: 1.0
+    dist_quantile: 0.9
+    auto_dist_scale: true
+    residualize: false
+    max_atom_size: 60
+
+    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+
+
+# M = 10 * 10 * 10 = 1000
+policy:
+  use_multi_rl: false
+
+  type: multiRL
+  learning_rate: 3.0e-4
+  batch_size: 16
+  n_epochs: 10
+  gamma: 0.99
+  ent_coef: 0.01
+  deterministic: true
+  early_stopping: false
+  early_stopping_patience: 10
+  max_episode_steps: 600
+  episodes_per_scenario: 10
+  training_record_interval: 100
+
+  eval_rollouts: 10
+
+
+evaluation:
+  render: false
+  fast_eval: false
+  num_episodes: 5
+  max_episode_steps: 600
+
+
+

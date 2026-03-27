@@ -48,9 +48,16 @@ def collect_states_for_all_nodes(
     """
     from collections import deque
 
-    # Get initial state and node
-    obs, info = system.reset()
-    _, initial_atoms, _ = system.perceiver.reset(obs, info)
+    # Get initial state and node; retry on placement failures
+    for _attempt in range(10):
+        try:
+            obs, info = system.reset()
+            _, initial_atoms, _ = system.perceiver.reset(obs, info)
+            break
+        except AssertionError as e:
+            print(f"  collect_states reset failed (attempt {_attempt + 1}/10): {e} — retrying")
+    else:
+        raise RuntimeError("collect_states_for_all_nodes: all 10 reset attempts failed")
     initial_atoms_frozen = frozenset(initial_atoms)
 
     # Find initial node in planning graph
@@ -127,7 +134,13 @@ def collect_states_for_all_nodes(
             success = False
 
             for step in range(max_steps_per_skill):
-                action = skill.get_action(obs)
+                try:
+                    action = skill.get_action(obs)
+                except Exception as e:
+                    print(f"    Skill raised exception: {e}")
+                    break
+                if action is None:
+                    break
                 obs, _, _, _, _ = system.env.step(action)
                 atoms = system.perceiver.step(obs)
                 atoms_frozen = frozenset(atoms)
@@ -598,9 +611,18 @@ def collect_total_planning_graph(
     for episode_idx in range(collect_episodes):
         print(f"\n=== Episode {episode_idx + 1}/{collect_episodes} ===")
 
-        # Reset environment with random seed
-        obs, info = system.reset(seed=int(rng.integers(0, 2**31)))
-        objects, atoms, goal = system.perceiver.reset(obs, info)
+        # Reset environment with random seed; retry on placement failures
+        for _attempt in range(10):
+            try:
+                episode_seed = int(rng.integers(0, 2**31))
+                obs, info = system.reset(seed=episode_seed)
+                objects, atoms, goal = system.perceiver.reset(obs, info)
+                break
+            except AssertionError as e:
+                print(f"  Reset failed (attempt {_attempt + 1}/10): {e} — retrying with new seed")
+        else:
+            print("  WARNING: all 10 reset attempts failed, skipping episode")
+            continue
 
         # Create a temporary approach just for this episode's planning graph
         from tamp_improv.approaches.improvisational.policies.base import Policy

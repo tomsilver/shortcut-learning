@@ -148,6 +148,8 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         self.best_eval_path: list[PlanningGraphEdge] = []
         self.best_eval_total_steps: int = 0
         self.edge_action_cache: dict[tuple[int, int, tuple[int, ...]], list[Any]] = {}
+        self._cached_actions: list[Any] = []   # pre-validated action sequence for current edge
+        self._executed_path: tuple[int, ...] = ()  # path prefix used for cache key lookup
 
         self.trained_signatures: list[ShortcutSignature] = []
 
@@ -161,6 +163,16 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         self.best_eval_path_node_ids: list[int] = []
         self.best_eval_path_edge_details: list[dict[str, Any]] = []
         self.shortcuts_added_to_graph: int = 0
+
+        # Cached planning env — created once, reused across all eval episodes
+        self._planning_env: gym.Env | None = None
+
+        # If True, use pre-built cost table for eval path (no physics simulation)
+        self.fast_eval: bool = False
+
+        # Cost table built from training graph edge costs.
+        # Key: (frozenset(source_atoms), frozenset(target_atoms)) → min observed cost
+        self._edge_cost_table: dict[tuple[frozenset, frozenset], float] = {}
 
         # Only initialize MultiRLPolicy here (needs base_env set up early)
         # Other policies will be initialized during training after wrappers are applied
@@ -180,13 +192,17 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         info: dict[str, Any],
     ) -> ApproachStepResult[ActType]:
         """Reset approach with initial observation."""
+        print("[DBG] approach.reset: entry")
         objects, atoms, goal = self.system.perceiver.reset(obs, info)
+        print(f"[DBG] approach.reset: perceiver.reset done, {len(atoms)} atoms")
         self._goal = goal
         self.observed_states = {}
         self.edge_action_cache.clear()
         self.shortcuts_added_to_graph = 0
 
+        print("[DBG] approach.reset: about to _create_planning_graph")
         self.planning_graph = self._create_planning_graph(objects, atoms)
+        print(f"[DBG] approach.reset: _create_planning_graph done, {len(self.planning_graph.nodes)} nodes")
 
         initial_node = self.planning_graph.node_map[frozenset(atoms)]
         self.observed_states[initial_node.id] = []
@@ -213,12 +229,24 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         # Compute edge costs and find shortest path
         print("Training mode:", self.training_mode)
         if not self.training_mode:
+            print("[DBG] approach.reset: about to _try_add_shortcuts")
             self._try_add_shortcuts(self.planning_graph)
-            self.current_path = self._compute_eval_path(obs, info, goal)
+            print(f"[DBG] approach.reset: _try_add_shortcuts done, added={self.shortcuts_added_to_graph}")
+            if self.fast_eval:
+                print("[DBG] approach.reset: about to _compute_eval_path_fast")
+                self.current_path = self._compute_eval_path_fast(obs, info, goal)
+                print(f"[DBG] approach.reset: _compute_eval_path_fast done, path_len={len(self.current_path)}")
+            else:
+                print("[DBG] approach.reset: about to _compute_eval_path")
+                self.current_path = self._compute_eval_path(obs, info, goal)
+                print(f"[DBG] approach.reset: _compute_eval_path done, path_len={len(self.current_path)}")
             # print("Computed eval path:", self.current_path)
         else:
+            print("[DBG] approach.reset: about to _compute_planning_graph_edge_costs")
             self._compute_planning_graph_edge_costs(obs, info)
+            print("[DBG] approach.reset: about to find_shortest_path")
             self.current_path = self.planning_graph.find_shortest_path(atoms, goal)
+            print("[DBG] approach.reset: find_shortest_path done")
 
         # If no path found, terminate with failure
         if not self.current_path:
@@ -361,11 +389,16 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
             # print("I am getting my current skill's action:", self._current_skill, "from edge:", self._current_edge)
             action = self._current_skill.get_action(obs)
             # print("I am executing action:", action)
-            if action is None:
-                print(f"No action returned by skill {self._current_skill}")
         except AssertionError as e:
             print(f"Assertion error in skill {self._current_skill}: {e}")
             action = None
+        if action is None:
+            print(f"No action returned by skill {self._current_skill} — terminating episode as failure")
+            return ApproachStepResult(
+                action=self.system.wrapped_env.action_space.sample(),
+                terminate=True,
+                info={"skill_failed": True},
+            )
         return ApproachStepResult(action=action)
 
     def _create_task_plan(
@@ -494,6 +527,18 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         self, lifted_op: LiftedOperator, objects: set[Object]
     ) -> list[tuple[Object, ...]]:
         """Find all valid groundings for a lifted operator."""
+        # Shortcut operators use variables named "?<objname>" tied to specific objects.
+        # Match by name instead of type to avoid O(|objects|^N) combinatorial explosion.
+        if lifted_op.name.startswith("Shortcut_"):
+            objects_by_name = {obj.name: obj for obj in objects}
+            grounding = []
+            for param in lifted_op.parameters:
+                obj_name = param.name.lstrip("?")
+                if obj_name not in objects_by_name:
+                    return []
+                grounding.append(objects_by_name[obj_name])
+            return [tuple(grounding)]
+
         objects_by_type: dict[Any, list[Object]] = {}
         for obj in objects:
             if obj.type not in objects_by_type:
@@ -794,6 +839,50 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         print("No path found to goal")
         return []
 
+    def _compute_eval_path_fast(
+        self,
+        obs: ObsType,
+        info: dict[str, Any],
+        goal: set[GroundAtom],
+    ) -> list[PlanningGraphEdge]:
+        """Compute eval path using pre-built edge cost table — no physics simulation.
+
+        Costs are looked up by (frozenset(source_atoms), frozenset(target_atoms)).
+        Regular edges unseen in training get cost=inf (excluded from search).
+        Shortcut edges unseen in training get shortcut_default_cost.
+        Edges with operator=None (from _try_add_shortcuts) get cost=inf since
+        base.py:step() cannot execute them.
+        """
+        assert self.planning_graph is not None
+
+        _, init_atoms, _ = self.system.perceiver.reset(obs, info)
+        initial_node = self.planning_graph.node_map[frozenset(init_atoms)]
+        goal_nodes = [n for n in self.planning_graph.nodes if goal.issubset(n.atoms)]
+
+        self.initial_node_id = initial_node.id
+        self.goal_node_ids = [n.id for n in goal_nodes]
+        self.initial_node_atoms = sorted(str(a) for a in initial_node.atoms)
+        self.goal_node_atoms_list = [sorted(str(a) for a in n.atoms) for n in goal_nodes]
+
+        if not goal_nodes:
+            print("No goal nodes found in planning graph (fast path)")
+            return []
+        if initial_node in goal_nodes:
+            print("Already at goal node (fast path)")
+            return []
+
+        for edge in self.planning_graph.edges:
+            key = (edge.source.atoms, edge.target.atoms)
+            if edge.operator is None:
+                # _try_add_shortcuts edges have no operator — step() cannot execute them
+                edge.max_cost = float("inf")
+                edge.cost = float("inf")
+            else:
+                edge.max_cost = self._edge_cost_table.get(key, float("inf"))
+                edge.cost = self._edge_cost_table.get(key, float("inf"))
+
+        return self.planning_graph.find_shortest_path(init_atoms, goal)
+
     def _execute_edge(
         self,
         edge: PlanningGraphEdge,
@@ -867,7 +956,11 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         curr_raw_obs = start_state
         curr_aug_obs = aug_obs
         for _ in range(self.max_skill_steps):
-            act = skill.get_action(curr_aug_obs)
+            try:
+                act = skill.get_action(curr_aug_obs)
+            except AssertionError as e:
+                print(f"Skill raised AssertionError (kinematic planner failure): {e}")
+                return float("inf"), start_state, start_info, False
             # print("Action:", act)
             if act is None:
                 print("No action returned by skill")
@@ -1016,7 +1109,17 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
                 queue.append((edge.target, new_path))
 
     def _create_planning_env(self) -> gym.Env:
-        """Create a separate environment instance for planning simulations."""
+        """Create (or return cached) separate environment instance for planning.
+
+        The environment is created once via deepcopy or clone() and reused
+        across all subsequent planning calls to avoid repeated C++ heap
+        allocations (e.g. PyBullet physics servers) that would cause OOM.
+        """
+        if self._planning_env is not None:
+            print("[DBG] _create_planning_env: returning cached env")
+            return self._planning_env
+
+        print("[DBG] _create_planning_env: creating new planning env (first call)")
         current_env = self.system.env
         valid_base_env = False
         while hasattr(current_env, "env"):
@@ -1031,10 +1134,17 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
                 "Could not find base environment with reset_from_state method"
             )
         base_env = current_env
+        print(f"[DBG] _create_planning_env: base_env type={type(base_env).__name__}, has_clone={hasattr(base_env, 'clone')}")
         if hasattr(base_env, "clone"):
+            print("[DBG] _create_planning_env: calling base_env.clone()")
             planning_env = base_env.clone()
-            return planning_env
-        planning_env = copy.deepcopy(base_env)
+            print("[DBG] _create_planning_env: clone() done")
+        else:
+            print("[DBG] _create_planning_env: calling copy.deepcopy(base_env)")
+            planning_env = copy.deepcopy(base_env)
+            print("[DBG] _create_planning_env: deepcopy done")
+        self._planning_env = planning_env
+        print("[DBG] _create_planning_env: cached and returning")
         return planning_env
 
     def _using_goal_env(

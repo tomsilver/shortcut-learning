@@ -98,6 +98,7 @@ from tamp_improv.approaches.improvisational.training import (
     Metrics,
     TrainingConfig,
     run_evaluation_episode,
+    run_evaluation_episode_with_caching,
 )
 from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
 from tamp_improv.utils.gpu_utils import set_torch_seed
@@ -232,19 +233,7 @@ class ShortcutSkill(LiftedOperatorSkill[ObsType, ActType]):
         obs: ObsType,
     ) -> ActType:
         """Use policy wrapper to select action toward target node."""
-        # Check if we've reached the target
-        current_atoms = self._perceiver.step(obs)
-        if self._target_atoms.issubset(current_atoms):
-            return None  # Signal completion
-
-        # Get action from policy wrapper
-        action = self._policy_wrapper.get_action(obs)
-
-        if action is None:
-            # Fall back to no-op or signal issue
-            return None
-
-        return action
+        return self._policy_wrapper.get_action(obs)
 
 
 # =============================================================================
@@ -284,30 +273,30 @@ def create_heuristic(
     """
     if cfg.heuristic.type == "none":
         return NoneHeuristic(
-            training_data=training_data, graph_distances=graph_distances, rng=rng
+            training_data=training_data, graph_distances=graph_distances, system=system, rng=rng
         )
     elif cfg.heuristic.type == "rollouts":
         return RolloutsHeuristic(
             training_data=training_data,
             graph_distances=graph_distances,
             system=system,
-            num_rollouts=cfg.heuristic.num_rollouts_per_node,
-            max_steps_per_rollout=cfg.heuristic.max_steps_per_rollout,
-            threshold=cfg.heuristic.shortcut_success_threshold,
-            action_scale=cfg.heuristic.action_scale,
+            num_rollouts=cfg.heuristic.rollouts.num_rollouts_per_node,
+            max_steps_per_rollout=cfg.heuristic.rollouts.max_steps_per_rollout,
+            threshold=cfg.heuristic.rollouts.success_threshold,
+            action_scale=cfg.heuristic.rollouts.action_scale,
             seed=cfg.seed,
             rng=rng,
         )
     elif cfg.heuristic.type == "smart_rollouts":
+        from tamp_improv.approaches.improvisational.heuristics.heuristic_smart_rollouts import SmartRolloutsConfig
+        sr_config = dataclass_from_cfg(SmartRolloutsConfig, cfg.heuristic.rollouts)
         return SmartRolloutsHeuristic(
             training_data=training_data,
             graph_distances=graph_distances,
             system=system,
-            num_rollouts=cfg.heuristic.num_rollouts_per_node,
-            max_steps_per_rollout=cfg.heuristic.max_steps_per_rollout,
-            threshold=cfg.heuristic.shortcut_success_threshold,
-            action_scale=cfg.heuristic.action_scale,
+            rng=rng,
             seed=cfg.seed,
+            config=sr_config,
         )
     elif cfg.heuristic.type == "crl":
         # Extract config from heuristic.crl subsection
@@ -424,6 +413,11 @@ def create_policy(
             ent_coef=cfg.policy.ent_coef,
             deterministic=cfg.policy.deterministic,
             device=device,
+            episodes_per_scenario=cfg.policy.episodes_per_scenario,
+            max_episode_steps=cfg.policy.max_episode_steps,
+            training_record_interval=cfg.policy.training_record_interval,
+            early_stopping=cfg.policy.early_stopping,
+            early_stopping_patience=cfg.policy.early_stopping_patience,
         )
         return MultiRLPolicy(seed=cfg.seed, config=rl_config)
     else:
@@ -556,6 +550,7 @@ def _extract_true_distances(
     node_ids = list(training_data.node_states.keys())
     for source_id in node_ids:
         for target_id in node_ids:
+            print("Computing true distance from node", source_id, "to node", target_id)
             if source_id == target_id:
                 true_dists[(source_id, target_id)] = 0.0
                 continue
@@ -693,6 +688,18 @@ def find_valid_groundings(
     lifted_op: LiftedOperator, objects: set[Object]
 ) -> list[tuple[Object, ...]]:
     """Find all valid groundings for a lifted operator."""
+    # Shortcut operators use variables named "?<objname>" tied to specific objects.
+    # Match by name instead of type to avoid O(|objects|^N) combinatorial explosion.
+    if lifted_op.name.startswith("Shortcut_"):
+        objects_by_name = {obj.name: obj for obj in objects}
+        grounding = []
+        for param in lifted_op.parameters:
+            obj_name = param.name.lstrip("?")
+            if obj_name not in objects_by_name:
+                return []
+            grounding.append(objects_by_name[obj_name])
+        return [tuple(grounding)]
+
     objects_by_type: dict[Any, list[Object]] = {}
     for obj in objects:
         if obj.type not in objects_by_type:
@@ -749,7 +756,7 @@ def train_heuristic(
         # Extract UCB / gains / estimated distances from heuristic
         round_data.update(_extract_heuristic_round_data(heuristic, training_data))
 
-        if cfg.debug:
+        if cfg.debug and cfg.heuristic.type in ["sac_v2", "crl_v2", "cmd_v2"]:
             all_data = heuristic.prune(max_shortcuts=None)
             policy = create_policy(cfg=cfg)
 
@@ -791,8 +798,8 @@ def train_heuristic(
 
             
             # Make copy of system and add all new operators/skills for successful shortcuts to the copy
-            virtual_system = copy.deepcopy(system)
-            virtual_graph = copy.deepcopy(training_data.graph)
+            virtual_system = copy.deepcopy(heuristic.system)
+            virtual_graph = copy.deepcopy(heuristic.internal_graph)
             add_shortcuts_to_graph(virtual_system, successful_policy_dict, training_data)
 
             # Add edges one by one to training_data.graph
@@ -824,11 +831,11 @@ def train_heuristic(
 
             # Calculate edge costs, graph distances, first edge dict for virtual system
             # Turn training_data.node_states into a dict of node_id -> list of states (instead of list of lists)
-            print(f"Graph has {len(training_data.graph.edges)} edges before adding shortcuts")
+            print(f"Graph has {len(heuristic.internal_graph.edges)} edges before adding shortcuts")
             print(f"Graph has {len(virtual_graph.edges)} edges after adding shortcuts")
             print("Edges in virtual graph not in original graph:")
             for edge in virtual_graph.edges:
-                if not any(e == edge for e in training_data.graph.edges):
+                if not any(e == edge for e in heuristic.internal_graph.edges):
                     print(f"  {edge.source.id}->{edge.target.id} (is shortcut? {edge.is_shortcut})")
 
             virtual_graph_distances = compute_graph_distances(virtual_graph, exclude_shortcuts=False)
@@ -836,6 +843,13 @@ def train_heuristic(
 
             # Store graph distances for this round
             round_data["graph_distances"] = dict(virtual_graph_distances)
+
+            # Record cumulative set of shortcuts in virtual_graph after this round
+            round_data["virtual_shortcuts"] = [
+                (edge.source.id, edge.target.id)
+                for edge in virtual_graph.edges
+                if edge.is_shortcut
+            ]
 
             if i < cfg.heuristic.num_rounds - 1:
                 heuristic.update_system(
@@ -847,119 +861,6 @@ def train_heuristic(
                 )
 
         round_results.append(round_data)
-
-
-
-        # if cfg.heuristic.num_rounds > 1:
-
-        #     # Begin by obtaining pruned training data (no pruning)
-        #     pruned_data = heuristic.prune(max_shortcuts=None)
-
-        #     # Collect all policies for all shortcuts in pruned_data
-        #     policy = create_policy(cfg=cfg)
-        #     policy_dict = create_policy_dictionary(
-        #         system=system,
-        #         heuristic=copy.deepcopy(heuristic),
-        #         policy=policy,
-        #         training_data=pruned_data,
-        #         cfg=cfg,
-        #         use_multi_rl=False,
-        #     )
-
-        #     # Compute stats for all shortcuts (includes rollout positions)
-        #     shortcut_quality_results = test_shortcut_quality(
-        #         system=system,
-        #         policy_dict=policy_dict,
-        #         training_data=pruned_data,
-        #         cfg=cfg
-        #     )
-
-        #     round_data["shortcut_rollouts"] = shortcut_quality_results["pairs"]
-
-        #     # Find the shortcuts with success rate > cfg.threshold
-        #     successful_shortcuts = []
-        #     for shortcut in shortcut_quality_results['pairs']:
-        #         if shortcut['success_rate'] >= cfg.heuristic.success_threshold:
-        #             successful_shortcuts.append(shortcut)
-
-        #     print(f"\nSuccessful shortcuts with success rate >= {cfg.heuristic.success_threshold}:")
-        #     for shortcut in successful_shortcuts:
-        #         print(f"  {shortcut['source_node']} -> {shortcut['target_node']} (success rate: {shortcut['success_rate']})")
-
-        #     # prune policy dict to only successful shortcuts
-        #     successful_policy_dict = {}
-        #     for shortcut in successful_shortcuts:
-        #         key = (shortcut['source_node'], shortcut['target_node'])
-        #         if key in policy_dict:
-        #             successful_policy_dict[key] = policy_dict[key]
-        #     print(f"\nPolicy dictionary pruned to {len(successful_policy_dict)} successful shortcuts")
-
-        #     # Make copy of system and add all new operators/skills for successful shortcuts to the copy
-        #     virtual_system = copy.deepcopy(system)
-        #     virtual_graph = copy.deepcopy(training_data.graph)
-        #     add_shortcuts_to_graph(virtual_system, successful_policy_dict, training_data)
-
-        #     # Add edges one by one to training_data.graph
-        #     for shortcut in successful_shortcuts:
-        #         source_id = shortcut['source_node']
-        #         target_id = shortcut['target_node']
-        #         source_atoms = training_data.node_atoms[source_id]
-        #         target_atoms = training_data.node_atoms[target_id]
-
-        #         source_node = virtual_graph.node_map[frozenset(source_atoms)]
-        #         target_node = virtual_graph.node_map[frozenset(target_atoms)]
-
-        #         obs, info = virtual_system.reset()
-        #         objects, _, _ = virtual_system.perceiver.reset(obs, info)
-
-        #         applicable_ops = find_applicable_operators(
-        #             virtual_system, set(source_atoms), objects
-        #         )
-
-        #         for op in applicable_ops:
-        #             next_atoms = set(source_atoms)
-        #             next_atoms.difference_update(op.delete_effects)
-        #             next_atoms.update(op.add_effects)
-
-        #             next_atoms_frozen = frozenset(next_atoms)
-        #             if next_atoms_frozen == frozenset(target_atoms):
-        #                 virtual_graph.add_edge(source_node, target_node, op, is_shortcut=True)
-
-        #     # Calculate edge costs, graph distances, first edge dict for virtual system
-        #     # Turn training_data.node_states into a dict of node_id -> list of states (instead of list of lists)
-        #     print(f"Graph has {len(training_data.graph.edges)} edges before adding shortcuts")
-        #     print(f"Graph has {len(virtual_graph.edges)} edges after adding shortcuts")
-        #     print("Edges in virtual graph not in original graph:")
-        #     for edge in virtual_graph.edges:
-        #         if not any(e == edge for e in training_data.graph.edges):
-        #             print(f"  {edge.source.id}->{edge.target.id} (is shortcut? {edge.is_shortcut})")
-
-        #     node_states_by_int = training_data.node_states
-        #     node_atoms_by_int = training_data.node_atoms
-        #     node_states_by_atoms = {}
-        #     for node_id, states in node_states_by_int.items():
-        #         atoms = node_atoms_by_int[node_id]
-        #         node_states_by_atoms[frozenset(atoms)] = states
-        #     compute_all_edge_costs(virtual_system,
-        #                            virtual_graph,
-        #                            node_states_by_atoms,
-        #                            num_samples=cfg.collection.num_cost_rollouts,
-        #                            max_steps=cfg.collection.max_steps_per_edge)
-
-        #     virtual_graph_distances = compute_graph_distances(virtual_graph, exclude_shortcuts=False)
-        #     virtual_first_edge_dict = compute_first_edge_dict(virtual_graph)
-
-        #     # Store graph distances for this round
-        #     round_data["graph_distances"] = dict(virtual_graph_distances)
-
-        #     heuristic.update_system(
-        #         new_system=virtual_system,
-        #         new_graph=virtual_graph,
-        #         new_graph_distances=virtual_graph_distances,
-        #         new_first_edge_dict=virtual_first_edge_dict,
-        #     )
-
-        # round_results.append(round_data)
 
     print("\nHeuristic training complete")
 
@@ -1686,7 +1587,10 @@ def add_shortcuts_to_graph(
         add_effects = lifted_target_atoms - lifted_source_atoms
         delete_effects = lifted_source_atoms - lifted_target_atoms
 
-        # Create the shortcut operator
+        # Create the shortcut operator.
+        # NOTE: _find_valid_groundings in base.py special-cases "Shortcut_*" operators
+        # to match each variable ?<objname> directly to the object named <objname>,
+        # giving exactly 1 grounding per node instead of O(|objects|^N).
         shortcut_operator = LiftedOperator(
             name=shortcut_name,
             parameters=parameters,
@@ -1744,7 +1648,7 @@ def test_shortcut_quality(
     policy_dict: dict[tuple[int, int], Policy[ObsType, ActType]],
     training_data: GoalConditionedTrainingData,
     cfg: DictConfig,
-) -> None:
+) -> dict:
     """Test quality of trained shortcuts by running rollouts.
 
     Args:
@@ -1887,13 +1791,22 @@ def evaluate_approach(
 
     num_eval_episodes = cfg.evaluation.num_episodes
 
+    import psutil as _psutil
     print(f"Running {num_eval_episodes} evaluation episodes...")
+    print(f"[MEM] eval entry: {_psutil.Process().memory_info().rss / 1e9:.2f} GB")
 
     # Create TrainingConfig for evaluation
     eval_config = TrainingConfig(
         render=cfg.evaluation.render,
         eval_max_steps=cfg.evaluation.max_episode_steps,
+        fast_eval=cfg.evaluation.fast_eval,
     )
+    print(f"[MEM] after TrainingConfig: {_psutil.Process().memory_info().rss / 1e9:.2f} GB")
+
+    # Reseed env before eval so results are independent of training RNG state
+    print("[MEM] calling env.reset...")
+    system.env.reset(seed=cfg.seed + 9999)
+    print(f"[MEM] after env.reset: {_psutil.Process().memory_info().rss / 1e9:.2f} GB")
 
     # Run evaluations
     rewards = []
@@ -1902,16 +1815,19 @@ def evaluate_approach(
     all_episode_data = []
 
     for ep in range(num_eval_episodes):
-        if (ep + 1) % 10 == 0:
+        print(f"[DBG] evaluate_approach: starting ep {ep + 1}/{num_eval_episodes}")
+        if (ep + 1) % 1 == 0:
             print(f"  Completed {ep + 1}/{num_eval_episodes} episodes")
 
-        reward, length, success, episode_data = run_evaluation_episode(
+        print(f"[DBG] evaluate_approach: about to run_evaluation_episode ep={ep}")
+        reward, length, success, episode_data = run_evaluation_episode_with_caching(
             system=system,
             approach=approach,
             policy_name="MultiRL",
             config=eval_config,
             episode_num=ep,
         )
+        print(f"[DBG] evaluate_approach: run_evaluation_episode done ep={ep}, success={success}, steps={length}")
         rewards.append(reward)
         lengths.append(length)
         successes.append(success)
@@ -2062,12 +1978,44 @@ def run_pipeline(
     # Stage 1: Collect training data
     print("STAGE 1: COLLECT TRAINING DATA")
     start = time.time()
-    training_data, graph_distances, first_edge_dict = collect_training_data(
-        system=system,
-        approach=approach,
-        cfg=cfg,
-        rng=rng,
-    )
+    if cfg.collection.load_data:
+        if cfg.collection.training_data_path is None:
+            raise ValueError("load_data=True but training_data_path is not set in config")
+        data_path = Path(cfg.collection.training_data_path)
+        if not data_path.exists():
+            raise FileNotFoundError(
+                f"load_data=True but training data not found at: {data_path}"
+            )
+        print(f"Loading training data from {data_path} ...")
+        training_data = GoalConditionedTrainingData.load(data_path)
+        graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
+        first_edge_dict = compute_first_edge_dict(training_data.graph)
+        g = training_data.graph
+        num_nodes = len(g.nodes) if g else 0
+        num_edges = len(g.edges) if g else 0
+        total_states = sum(
+            (len(v) if isinstance(v, list) else 1)
+            for v in training_data.node_states.values()
+        )
+        print(f"  Graph:            {num_nodes} nodes, {num_edges} edges")
+        print(f"  Node states:      {len(training_data.node_states)} nodes with states ({total_states} total states)")
+        print(f"  Unique shortcuts: {len(training_data.unique_shortcuts)}")
+        print(f"  Valid shortcuts:  {len(training_data.valid_shortcuts)} (with per-state duplicates)")
+        print(f"  Node atoms:       {len(training_data.node_atoms)} nodes with atoms")
+
+        
+    else:
+        training_data, graph_distances, first_edge_dict = collect_training_data(
+            system=system,
+            approach=approach,
+            cfg=cfg,
+            rng=rng,
+        )
+        if cfg.collection.training_data_path is not None:
+            data_path = Path(cfg.collection.training_data_path)
+            data_path.mkdir(parents=True, exist_ok=True)
+            training_data.save(data_path)
+            print(f"Saved training data to {data_path}")
     times["collection_time"] = time.time() - start
 
     # Store serializable pre-training data
@@ -2078,9 +2026,14 @@ def run_pipeline(
     results.all_shortcuts = list(training_data.unique_shortcuts)
     results.graph_distances = dict(graph_distances)
 
-    # Compute and store true distances
-    print("Computing true distances for all node pairs...")
-    results.true_distances = _extract_true_distances(system, training_data)
+    # Compute and store true distances (only for environments that support it)
+    from tamp_improv.benchmarks.gridworld_continuous import GridworldContinuousTAMPSystem
+    if isinstance(system, GridworldContinuousTAMPSystem):
+        print("Computing true distances for all node pairs...")
+        results.true_distances = _extract_true_distances(system, training_data)
+    else:
+        print("Skipping true distance computation (not supported for this environment)")
+        results.true_distances = {}
 
     # Create heuristic instance based on config
     start = time.time()
@@ -2165,9 +2118,16 @@ def run_pipeline(
     )
     times["policy_training_time"] = time.time() - start
 
+    import psutil as _psutil
+    def _mem_gb() -> str:
+        return f"{_psutil.Process().memory_info().rss / 1e9:.2f} GB"
+
+    print(f"[MEM] After policy training: {_mem_gb()}")
+
     # Stage 5: Add shortcuts to graph
     print("STAGE 5: ADD SHORTCUTS TO GRAPH")
     virtual_system = copy.deepcopy(approach.system)
+    print(f"[MEM] After deepcopy(approach.system): {_mem_gb()}")
     start = time.time()
     num_shortcuts_added = add_shortcuts_to_graph(
         system=virtual_system,
@@ -2176,10 +2136,12 @@ def run_pipeline(
     )
     times["add_shortcuts_time"] = time.time() - start
 
-    # Stage 5.5: Test shortcut quality (optional)
-    if cfg.debug and len(pruned_training_data.valid_shortcuts) > 0:
+    # Stage 5.5: Test shortcut quality — always run when shortcuts exist,
+    # so we can populate the edge cost table for fast eval path planning.
+    shortcut_quality_results = None
+    if len(pruned_training_data.valid_shortcuts) > 0:
         print("STAGE 5.5: TEST SHORTCUT QUALITY")
-        test_shortcut_quality(
+        shortcut_quality_results = test_shortcut_quality(
             system=virtual_system,
             policy_dict=policy_dict,
             training_data=pruned_training_data,
@@ -2188,6 +2150,29 @@ def run_pipeline(
 
     # Update the approach's system with the new graph containing shortcuts for evaluation
     approach.update_system(virtual_system)
+    print(f"[MEM] After approach.update_system: {_mem_gb()}")
+
+    # Build edge cost table from training graph for fast eval path planning
+    approach.fast_eval = cfg.evaluation.fast_eval
+    approach._edge_cost_table = {
+        (edge.source.atoms, edge.target.atoms): edge.cost
+        for edge in training_data.graph.edges
+        if edge.cost is not None and edge.cost != float("inf")
+    }
+    # Add shortcut costs from Stage 5.5 quality test results
+    if shortcut_quality_results is not None:
+        for pair in shortcut_quality_results["pairs"]:
+            src_atoms = training_data.node_atoms.get(pair["source_node"])
+            tgt_atoms = training_data.node_atoms.get(pair["target_node"])
+            if src_atoms is not None and tgt_atoms is not None:
+                approach._edge_cost_table[(frozenset(src_atoms), frozenset(tgt_atoms))] = pair["avg_length"]
+    print(f"fast_eval={cfg.evaluation.fast_eval}, built edge cost table with {len(approach._edge_cost_table)} entries")
+
+    # Clear relevant_objects on the eval system's ImprovWrapper so base skills
+    # receive full (unfiltered) observations — MultiRL training sets this during
+    # training and it is not cleared on reset(), causing base skills to fail.
+    if hasattr(system.env, "set_relevant_objects"):
+        system.env.set_relevant_objects(None)
 
     # Stage 6: Evaluate
     print("STAGE 6: EVALUATE")

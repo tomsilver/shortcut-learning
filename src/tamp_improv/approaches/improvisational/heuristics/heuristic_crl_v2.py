@@ -37,6 +37,7 @@ from tamp_improv.approaches.improvisational.heuristics.networks import (  # noqa
     ContinuousActor,
     DiscreteActor,
     GoalEncoder,
+    ResidualContinuousActor,
     StateActionEncoder,
 )
 from tamp_improv.approaches.improvisational.policies.base import (
@@ -102,12 +103,17 @@ class CRLV2HeuristicConfig:
     # Training
     iters_per_epoch: int = 1  # Gradient steps per training call
     learn_frequency: int = 10  # Learn every N epochs
+    gain_update_frequency: int = 10  # Update UCB gains every N epochs
+    node_distance_samples: int = 5  # States to average over in estimate_node_distance
     num_epochs_per_round: int = 200
     trajectories_per_epoch: int = 10
     max_episode_steps: int = 100
 
     # Atom encoding
     max_atom_size: int = 50  # Maximum number of unique atoms for multi-hot encoding
+
+    # Success tracking
+    num_reliability_trials: int = 10  # Window size for success/failure deque per node pair
 
     # Device
     device: str = "cuda"  # "cuda" or "cpu"
@@ -116,8 +122,10 @@ class CRLV2HeuristicConfig:
 class ContrastiveReplayBuffer:
     """Replay buffer for storing complete trajectories.
 
-    Each trajectory is a sequence of (state, action, node_id) tuples where
-    node_id is the planning node reached at that timestep.
+    Each trajectory is a sequence of (obs, action, node_id) tuples where
+    obs is the raw environment observation (needed for skill.get_action in residual
+    mode) and node_id is the planning node reached at that timestep.
+    state_flat is derived from obs on demand via _flatten_state.
     """
 
     def __init__(self, max_size: int, gamma: float = 0.99):
@@ -129,28 +137,30 @@ class ContrastiveReplayBuffer:
         """
         self.max_size = max_size
         self.gamma = gamma
-        self.trajectories: deque[list[tuple[NDArray, NDArray, int]]] = deque(
+        self.trajectories: deque[list[tuple[Any, NDArray, int]]] = deque(
             maxlen=max_size
         )
 
-    def add_trajectory(self, trajectory: list[tuple[NDArray, NDArray, int]]) -> None:
+    def add_trajectory(
+        self, trajectory: list[tuple[Any, NDArray, int]]
+    ) -> None:
         """Add a complete trajectory to the buffer.
 
         Args:
-            trajectory: List of (state, action, node_id) tuples
+            trajectory: List of (obs, action, node_id) tuples
         """
         if len(trajectory) > 0:
             self.trajectories.append(trajectory)
 
     def sample_batch_crtr(
         self, batch_size: int, repetition_factor: int = 4
-    ) -> tuple[NDArray, NDArray, NDArray]:
+    ) -> tuple[list[Any], NDArray, NDArray, NDArray]:
         """Sample batch using CRTR (Contrastive Random Trajectory Repetition).
 
         For each trajectory sampled:
         1. Sample t uniformly from [0, len(traj)-1]
         2. Sample t' geometrically after t using gamma
-        3. Return (state[t], action[t], node[t']) as a positive pair
+        3. Return (obs[t], action[t], node[t'], node[t]) as a positive pair
         4. Repeat each trajectory `repetition_factor` times
 
         Args:
@@ -158,9 +168,10 @@ class ContrastiveReplayBuffer:
             repetition_factor: Number of times to repeat each trajectory
 
         Returns:
-            states: (batch_size * repetition_factor, state_dim)
+            obs_list: raw observations at t (list, length batch_size * repetition_factor)
             actions: (batch_size * repetition_factor, action_dim)
-            future_nodes: (batch_size * repetition_factor,) - node IDs
+            future_nodes: (batch_size * repetition_factor,) - node IDs at t'
+            current_nodes: (batch_size * repetition_factor,) - node IDs at t
         """
         if len(self.trajectories) == 0:
             raise ValueError("Cannot sample from empty buffer")
@@ -168,19 +179,21 @@ class ContrastiveReplayBuffer:
         # Sample trajectories with replacement
         sampled_trajs = random.choices(self.trajectories, k=batch_size)
 
-        states_list = []
+        obs_list: list[Any] = []
         actions_list = []
         future_nodes_list = []
+        current_nodes_list = []
 
         for traj in sampled_trajs:
             # Repeat this trajectory `repetition_factor` times
             for _ in range(repetition_factor):
                 if len(traj) == 1:
                     # Special case: trajectory has only one step
-                    state, action, node = traj[0]
-                    states_list.append(state)
+                    obs, action, node = traj[0]
+                    obs_list.append(obs)
                     actions_list.append(action)
                     future_nodes_list.append(node)
+                    current_nodes_list.append(node)
                 else:
                     # Sample current timestep t uniformly
                     t = random.randint(0, len(traj) - 1)
@@ -205,17 +218,19 @@ class ContrastiveReplayBuffer:
                         else:
                             t_future = t + 1
 
-                    state_t, action_t, _ = traj[t]
+                    obs_t, action_t, node_t = traj[t]
                     _, _, node_future = traj[t_future]
 
-                    states_list.append(state_t)
+                    obs_list.append(obs_t)
                     actions_list.append(action_t)
                     future_nodes_list.append(node_future)
+                    current_nodes_list.append(node_t)
 
         return (
-            np.array(states_list),
+            obs_list,
             np.array(actions_list),
             np.array(future_nodes_list),
+            np.array(current_nodes_list),
         )
 
     def __len__(self) -> int:
@@ -258,6 +273,7 @@ class CRLv2Heuristic(BaseHeuristic):
         self.system = system
         self.rng = rng
         self.first_edge_dict = first_edge_dict
+        self.internal_graph = training_data.graph  # Keep an internal copy of the graph for edge lookups (updated in multi-round training)
 
         # Initialize config
         if config is None:
@@ -303,9 +319,26 @@ class CRLv2Heuristic(BaseHeuristic):
         self.total_samples = 0
         self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
         self.node_pair_gains = np.zeros((self.num_nodes, self.num_nodes))
+        self.original_node_pair_graph_dists = np.zeros((self.num_nodes, self.num_nodes))
         self.node_pair_graph_dists = np.zeros((self.num_nodes, self.num_nodes))
         for (i, j), dist in graph_distances.items():
+            self.original_node_pair_graph_dists[i, j] = dist
             self.node_pair_graph_dists[i, j] = dist
+
+        self.valid_pairs = list(training_data.unique_shortcuts)
+        self.valid_pairs_mask = np.zeros((self.num_nodes, self.num_nodes), dtype=bool)
+        for (i, j) in self.valid_pairs:
+            self.valid_pairs_mask[i, j] = True
+
+        self.node_pair_successes = {}
+        for (i, j) in self.valid_pairs:
+            # Buffer of size k for each node pair to track recent success/failure outcomes
+            k = self.config.num_reliability_trials
+            if k > 0:
+                self.node_pair_successes[(i, j)] = deque(maxlen=k)
+            else:
+                self.node_pair_successes[(i, j)] = []
+
 
         print(f"State dimension: {self.state_dim}")
         print(f"Action space: {self.action_space_type}")
@@ -333,6 +366,11 @@ class CRLv2Heuristic(BaseHeuristic):
 
         # Pre-compute node atoms for fast lookup
         self._node_atoms_dict = dict(training_data.node_atoms)
+        # Reverse map: frozenset(atoms) -> node_id for O(1) lookup
+        self._atoms_to_node_id: dict[frozenset, int] = {
+            frozenset(atoms): node_id
+            for node_id, atoms in self._node_atoms_dict.items()
+        }
 
         # Dynamic atom indexing (like DQNHeuristicWrapper)
         self.atom_to_index: dict[str, int] = {}
@@ -408,6 +446,7 @@ class CRLv2Heuristic(BaseHeuristic):
             print(f"  Node {i} -> Node {j}: {old_dist} -> {dist}")
 
         self.system = new_system
+        self.internal_graph = new_graph
         self.graph_distances = new_graph_distances
         self.node_pair_graph_dists = np.zeros((self.num_nodes, self.num_nodes))
         for (i, j), dist in new_graph_distances.items():
@@ -456,6 +495,13 @@ class CRLv2Heuristic(BaseHeuristic):
             self.actor = DiscreteActor(
                 state_dim=self.state_dim,
                 num_actions=self.action_dim,
+                atom_dim=self.config.max_atom_size,
+                hidden_dims=self.config.actor_hidden_dims,
+            ).to(device)
+        elif self.config.residualize:
+            self.actor = ResidualContinuousActor(
+                state_dim=self.state_dim,
+                action_dim=self.action_dim,
                 atom_dim=self.config.max_atom_size,
                 hidden_dims=self.config.actor_hidden_dims,
             ).to(device)
@@ -525,6 +571,15 @@ class CRLv2Heuristic(BaseHeuristic):
         """
         self.total_samples = 0
         self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
+        self.node_pair_successes = {}
+        for (i, j) in self.valid_pairs:
+            # Buffer of size k for each node pair to track recent success/failure outcomes
+            k = self.config.num_reliability_trials
+            if k > 0:
+                self.node_pair_successes[(i, j)] = deque(maxlen=k)
+            else:
+                self.node_pair_successes[(i, j)] = []
+
 
         critic_losses = []
         actor_losses = []
@@ -544,9 +599,9 @@ class CRLv2Heuristic(BaseHeuristic):
                         critic_loss, actor_loss = self._update_networks()
                         critic_losses.append(critic_loss)
                         actor_losses.append(actor_loss)
-                
-                if self.config.sampling_method != "uniform":
-                    self._update_gains()
+
+            if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
+                self._update_gains()
 
             # Print progress
             if (epoch + 1) % 10 == 0 or epoch == 0:
@@ -567,41 +622,38 @@ class CRLv2Heuristic(BaseHeuristic):
             "buffer_size": len(self.replay_buffer),
         }
 
-    def _collect_trajectory(self) -> list[tuple[NDArray, NDArray, int]]:
+    def _collect_trajectory(self) -> list[tuple[Any, NDArray, int]]:
         """Collect one trajectory using current actor.
 
         Returns:
-            List of (state, action, node_id) tuples
+            List of (obs, action, node_id) tuples
         """
         # Sample random source and target nodes
         node_ids = list(self.training_data.node_states.keys())
 
         if self.config.sampling_method == "uniform":
-            source_id = self.rng.choice(node_ids)
-            target_id = self.rng.choice(node_ids)
+            idx = self.rng.integers(len(self.valid_pairs))
+            source_id, target_id = self.valid_pairs[idx]
 
         elif self.config.sampling_method == "ucb":
             gains = self.node_pair_gains
-            ucbs = np.sqrt(2 * np.log(self.total_samples) / (self.node_pair_samples+ 1e-8))
-            weights = gains + self.config.ucb_beta * ucbs
-            
-            # choose the node pair with maximum weight
-            flat_index = np.argmax(weights)
+            ucbs = np.sqrt(2 * np.log(max(self.total_samples, 1)) / (self.node_pair_samples + 1e-8))
+            weights = np.where(self.valid_pairs_mask, gains + self.config.ucb_beta * ucbs, -np.inf)
+            flat_index = int(np.argmax(weights))
             source_id = flat_index // self.num_nodes
             target_id = flat_index % self.num_nodes
 
-            # what were the gain and ucb there
             gain = gains[source_id, target_id]
             ucb = ucbs[source_id, target_id]
             print(f"UCB sampling selected node pair ({source_id}, {target_id}) with gain {gain:.4f} and ucb {ucb:.4f} while max ucb is {np.max(ucbs):.4f}")
-        
+
         elif self.config.sampling_method == "stochastic_ucb":
             gains = self.node_pair_gains
-            ucbs = np.sqrt(2 * np.log(self.total_samples) / (self.node_pair_samples+ 1e-8))
+            ucbs = np.sqrt(2 * np.log(max(self.total_samples, 1)) / (self.node_pair_samples + 1e-8))
             weights = gains + self.config.ucb_beta * ucbs
-            
-            # softmax over weights to get probabilities
+            weights = np.where(self.valid_pairs_mask, weights, -np.inf)
             exp_weights = np.exp(weights - np.max(weights))
+            exp_weights = np.where(self.valid_pairs_mask, exp_weights, 0.0)
             probabilities = exp_weights / np.sum(exp_weights)
             flat_index = self.rng.choice(self.num_nodes * self.num_nodes, p=probabilities.flatten())
             source_id = flat_index // self.num_nodes
@@ -615,8 +667,8 @@ class CRLv2Heuristic(BaseHeuristic):
         self.total_samples += 1
 
 
-        source_id = self.rng.choice(node_ids)
-        target_id = self.rng.choice(node_ids)
+        # source_id = self.rng.choice(node_ids)
+        # target_id = self.rng.choice(node_ids)
 
         # Sample random source state
         source_states = self.training_data.node_states[source_id]
@@ -631,6 +683,8 @@ class CRLv2Heuristic(BaseHeuristic):
 
         trajectory = []
 
+        successful = False
+
         for step in range(self.config.max_episode_steps):
             # Flatten current state
             state_flat = self._flatten_state(current_state)
@@ -641,14 +695,15 @@ class CRLv2Heuristic(BaseHeuristic):
             if current_node_id is None:
                 current_node_id = source_id  # Fallback to source
 
-            # Select action using actor (goes through get_action for residualization)
-            action = self.get_action(current_state, target_id)
+            # Select action using actor; pass current_atoms to avoid second perceiver call
+            action = self.get_action(current_state, target_id, current_atoms=current_atoms)
 
-            # Store transition (state, action, current_node)
-            trajectory.append((state_flat, action, current_node_id))
+            # Store (obs, action, node_id); state_flat computed on demand from obs
+            trajectory.append((current_state, action, current_node_id))
 
             # Check if reached goal
             if current_node_id == target_id:
+                successful = True
                 break
 
             # Execute action
@@ -657,42 +712,101 @@ class CRLv2Heuristic(BaseHeuristic):
             if terminated or truncated:
                 break
 
+        if successful:
+            print(f"Successfully reached target node {target_id} from source node {source_id} in {step+1} steps.")
+            self.node_pair_successes[(source_id, target_id)].append(1)
+        else:
+            print(f"Failed to reach target node {target_id} from source node {source_id} after {self.config.max_episode_steps} steps.")
+            self.node_pair_successes[(source_id, target_id)].append(0)
+
         return trajectory
 
-    def get_action(
-        self, obs: "ObsType", target_node: int
-    ) -> NDArray | int:
-        state_flat = self._flatten_state(obs)
-        actor_action = self._select_action_with_actor(state_flat, target_node)
-        if self.config.residualize and self.action_space_type == "continuous":
-            start_atoms = self.system.perceiver.step(obs)
-            goal_atoms = self._node_atoms_dict.get(target_node, set())
+    def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
+        """Get the base skill action for (obs, target_node), or zeros if unavailable."""
+        if not self.config.residualize or self.action_space_type != "continuous":
+            return np.zeros(self.action_dim, dtype=np.float32)
+
+        start_atoms = self.system.perceiver.step(obs)
+        goal_atoms = self._node_atoms_dict.get(target_node, set())
+        edge = self.first_edge_dict.get(
+            (frozenset(start_atoms), frozenset(goal_atoms)), None
+        )
+        if edge is not None:
+            operator = edge.operator
+            skills = [s for s in self.system.skills if s.can_execute(operator)]
+            if skills:
+                skill = skills[0]
+                skill.reset(operator)
+                try:
+                    action = skill.get_action(obs)
+                except Exception:
+                    action = None
+                if action is not None:
+                    return np.array(action, dtype=np.float32)
+
+        return np.zeros(self.action_dim, dtype=np.float32)
+
+    def _get_base_actions_batch(
+        self,
+        obs_list: list[Any],
+        current_node_ids: NDArray,
+        goal_node_ids: NDArray,
+    ) -> NDArray:
+        """Compute base skill actions for a batch of (obs, current_node, goal_node) pairs.
+
+        Args:
+            obs_list: raw observations at the sampled timestep
+            current_node_ids: (batch_size,) node IDs at the sampled timestep
+            goal_node_ids: (batch_size,) goal node IDs for each sample
+
+        Returns:
+            base_actions: (batch_size, action_dim) float32 array
+        """
+        batch_size = len(obs_list)
+        base_actions = np.zeros((batch_size, self.action_dim), dtype=np.float32)
+
+        if not self.config.residualize or self.action_space_type != "continuous":
+            return base_actions
+
+        for i in range(batch_size):
+            start_atoms = self._node_atoms_dict.get(int(current_node_ids[i]), set())
+            goal_atoms = self._node_atoms_dict.get(int(goal_node_ids[i]), set())
             edge = self.first_edge_dict.get(
                 (frozenset(start_atoms), frozenset(goal_atoms)), None
             )
-            if edge is not None:
-                operator = edge.operator
-                skills = [s for s in self.system.skills if s.can_execute(operator)]
-                if not skills:
-                    raise TaskThenMotionPlanningFailure(
-                        f"No skill found for operator {operator.name}"
-                    )
-                skill = skills[0]
-                skill.reset(operator)
-                base_action = skill.get_action(obs)
-            else:
-                base_action = np.zeros_like(actor_action)
-            return actor_action + base_action
-        return actor_action
+            if edge is None:
+                continue
+            operator = edge.operator
+            skills = [s for s in self.system.skills if s.can_execute(operator)]
+            if not skills:
+                continue
+            skill = skills[0]
+            skill.reset(operator)
+            try:
+                action = skill.get_action(obs_list[i])
+            except Exception:
+                action = None
+            if action is not None:
+                base_actions[i] = np.array(action, dtype=np.float32)
+
+        return base_actions
+
+    def get_action(
+        self, obs: "ObsType", target_node: int, current_atoms: set | None = None
+    ) -> NDArray | int:
+        state_flat = self._flatten_state(obs)
+        base_action = self._get_base_action(obs, target_node)
+        return self._select_action_with_actor(state_flat, target_node, base_action)
 
     def _select_action_with_actor(
-        self, state_flat: NDArray, target_node: int
+        self, state_flat: NDArray, target_node: int, base_action: NDArray | None = None
     ) -> NDArray | int:
         """Select action using learned actor.
 
         Args:
             state_flat: Flattened current state
             target_node: Target node ID
+            base_action: Base skill action for residual actor (ignored if not residualize)
 
         Returns:
             Action (int for discrete, ndarray for continuous)
@@ -711,25 +825,20 @@ class CRLv2Heuristic(BaseHeuristic):
                 action_tensor = self.actor.sample(state_tensor, goal_tensor)
                 return int(action_tensor.item())
             else:
-                # Use deterministic action at eval time
-                action_tensor, _ = self.actor.sample(
-                    state_tensor, goal_tensor, deterministic=True
-                )
+                if isinstance(self.actor, ResidualContinuousActor) and base_action is not None:
+                    base_tensor = torch.FloatTensor(base_action).unsqueeze(0).to(device)
+                    action_tensor, _ = self.actor.sample(
+                        state_tensor, goal_tensor, base_tensor, deterministic=True
+                    )
+                else:
+                    action_tensor, _ = self.actor.sample(
+                        state_tensor, goal_tensor, deterministic=True
+                    )
                 return action_tensor.squeeze(0).cpu().numpy()
 
     def _find_node_for_atoms(self, atoms: set) -> int | None:
-        """Find node ID that matches given atoms.
-
-        Args:
-            atoms: Set of atoms
-
-        Returns:
-            Node ID if found, None otherwise
-        """
-        for node_id, node_atoms in self._node_atoms_dict.items():
-            if node_atoms == atoms:
-                return node_id
-        return None
+        """Find node ID that matches given atoms."""
+        return self._atoms_to_node_id.get(frozenset(atoms), None)
 
     def _update_networks(self) -> tuple[float, float]:
         """Update critic and actor networks.
@@ -739,10 +848,15 @@ class CRLv2Heuristic(BaseHeuristic):
         """
         device = torch.device(self.config.device)
 
-        # Sample batch from replay buffer
-        states, actions, future_nodes = self.replay_buffer.sample_batch_crtr(
+        # Sample batch from replay buffer (obs_list contains raw observations)
+        obs_list, actions, future_nodes, current_nodes = self.replay_buffer.sample_batch_crtr(
             batch_size=self.config.batch_size,
             repetition_factor=self.config.repetition_factor,
+        )
+
+        # Flatten observations → states array
+        states = np.array(
+            [self._flatten_state(obs) for obs in obs_list], dtype=np.float32
         )
 
         # Convert node IDs to atom vectors
@@ -810,6 +924,13 @@ class CRLv2Heuristic(BaseHeuristic):
         # === Update Actor ===
         self.actor_optimizer.zero_grad()
 
+        # Compute live base actions for this batch (using current skill policy)
+        if isinstance(self.actor, ResidualContinuousActor):
+            base_actions_np = self._get_base_actions_batch(obs_list, current_nodes, future_nodes)
+            base_actions_tensor = torch.FloatTensor(base_actions_np).to(device)
+        else:
+            base_actions_tensor = None
+
         # Sample new actions from actor for current states and goals
         # Goal: maximize alignment between sa_encoder(s, π(s,g)) and g_encoder(g)
 
@@ -837,9 +958,14 @@ class CRLv2Heuristic(BaseHeuristic):
 
         else:
             # Continuous: use reparameterization trick
-            sampled_actions, log_probs = self.actor.sample(
-                states_tensor, future_atoms_tensor
-            )
+            if base_actions_tensor is not None:
+                sampled_actions, log_probs = self.actor.sample(
+                    states_tensor, future_atoms_tensor, base_actions_tensor
+                )
+            else:
+                sampled_actions, log_probs = self.actor.sample(
+                    states_tensor, future_atoms_tensor
+                )
             sampled_actions.retain_grad()  # DEBUG: Keep gradient for non-leaf
             sa_repr_actor = self.sa_encoder(states_tensor, sampled_actions)
 
@@ -962,20 +1088,15 @@ class CRLv2Heuristic(BaseHeuristic):
         """
         source_states = self.training_data.node_states[source_node]
         target_states = self.training_data.node_states[target_node]
+        k = self.config.node_distance_samples
 
-        d_sg_sq = 0
-        n = 0
-        for source_state in random.sample(source_states, min(100, len(source_states))):
-            d_sg_sq += (self.latent_dist(source_state, target_node)) ** 2
-            n += 1
-        d_sg_sq /= n
-        
-        d_gg_sq = 0
-        n = 0
-        for target_state in random.sample(target_states, min(100, len(target_states))):
-            d_gg_sq += (self.latent_dist(target_state, target_node)) ** 2
-            n += 1
-        d_gg_sq /= n
+        src_sample = random.sample(source_states, min(k, len(source_states)))
+        tgt_sample = random.sample(target_states, min(k, len(target_states)))
+        if not src_sample or not tgt_sample:
+            return float(self.config.max_episode_steps)
+
+        d_sg_sq = float(np.mean([(self.latent_dist(s, target_node)) ** 2 for s in src_sample]))
+        d_gg_sq = float(np.mean([(self.latent_dist(t, target_node)) ** 2 for t in tgt_sample]))
 
         # print("D_gg:", d_gg_sq, "D_sg:", d_sg_sq)
 
@@ -983,85 +1104,7 @@ class CRLv2Heuristic(BaseHeuristic):
 
         return self.config.dist_scale * max(0, -(1 / (2 * np.log(self.config.gamma))) * (d_sg_sq - d_gg_sq))
 
-    # def prune(
-    #     self,
-    #     max_shortcuts: int | None,
-    # ) -> GoalConditionedTrainingData:
-    #     """Like prune_explore, but only prunes the top max_shortcuts shortcuts
-    #     from the list instead of keep_fraction/explore_fraction."""
 
-    #     if max_shortcuts is None or max_shortcuts >= len(self.training_data.unique_shortcuts):
-    #         return self.training_data
-
-    #     print(f"\n[DEBUG] Pruning to max_shortcuts={max_shortcuts}")
-
-    #     # Compute success rates and select shortcuts (use unique_shortcuts for node-node pairs)
-    #     score_tuples = []
-    #     for source_id, target_id in self.training_data.unique_shortcuts:
-    #         # p = self.estimate_probability(source_id, target_id)
-    #         p = 1.0  # For now, assume all shortcuts are equally probable
-    #         g = self.get_gain(source_id, target_id)
-    #         score = p * g
-    #         score_tuples.append((source_id, target_id, score, p, g))
-
-    #     # Sort score tuples first by score, and then by probability
-    #     score_tuples.sort(key=lambda x: x[2], reverse=True)
-    #     print("  Shortcut scores (source -> target: score (dist, prob, gain)):")
-    #     for source_id, target_id, score, p, g in score_tuples:
-    #         d = self.estimate_node_distance(source_id, target_id)
-    #         dg = self.graph_distances.get((source_id, target_id), np.inf)
-    #         print(
-    #             f"    ({source_id} -> {target_id}): {score:.4f} ({d:.2f}, {dg:.2f}, {p:.2f}, {g:.2f})"
-    #         )
-
-    #     # Select top max_shortcuts shortcuts
-    #     selected_shortcuts = score_tuples[:min(max_shortcuts, len(score_tuples))]
-    #     selected_unique_shortcuts = [
-    #         (source_id, target_id)
-    #         for source_id, target_id, _, _, _ in selected_shortcuts
-    #     ]
-
-    #     # Filter training data to match selected unique shortcuts
-    #     # Keep all state-node pairs that correspond to selected node-node pairs
-    #     selected_set = set(selected_unique_shortcuts)
-    #     selected_indices = []
-
-    #     for i, (source_id, target_id) in enumerate(self.training_data.valid_shortcuts):
-    #         if (source_id, target_id) in selected_set:
-    #             selected_indices.append(i)
-
-    #     print(f"  ({len(selected_indices)} state-node pairs)")
-
-    #     # Filter shortcut_info to match the pruned data
-    #     original_shortcut_info = self.training_data.config.get("shortcut_info", [])
-    #     pruned_shortcut_info = (
-    #         [original_shortcut_info[i] for i in selected_indices]
-    #         if original_shortcut_info
-    #         else []
-    #     )
-
-    #     pruned_data = GoalConditionedTrainingData(
-    #         states=[self.training_data.states[i] for i in selected_indices],
-    #         current_atoms=[
-    #             self.training_data.current_atoms[i] for i in selected_indices
-    #         ],
-    #         goal_atoms=[self.training_data.goal_atoms[i] for i in selected_indices],
-    #         valid_shortcuts=[
-    #             self.training_data.valid_shortcuts[i] for i in selected_indices
-    #         ],
-    #         unique_shortcuts=selected_unique_shortcuts,  # Unique node-node pairs
-    #         node_states=self.training_data.node_states,  # Keep all node states
-    #         node_atoms=self.training_data.node_atoms,  # Keep all node atoms
-    #         graph=self.training_data.graph,  # Keep planning graph
-    #         config={
-    #             **self.training_data.config,
-    #             "shortcut_info": pruned_shortcut_info,
-    #             "pruning_method": "crl",
-    #             "threshold": self.config.threshold,
-    #         },
-    #     )
-
-    #     return pruned_data
     
     def prune_by_success(self, success_threshold: float, max_steps: int) -> GoalConditionedTrainingData:
         """Prune shortcuts based on estimated success rate of reaching target from source.
@@ -1075,14 +1118,17 @@ class CRLv2Heuristic(BaseHeuristic):
         print("Heuristic-Estimated Success Probs of All Shortcuts:")
         pruned_pairs = []
         for (x, y) in self.training_data.unique_shortcuts:
-            d = self.estimate_node_distance(x, y)
-            if d / max_steps < success_threshold:
-                prob = 1.0
+            k = self.config.num_reliability_trials
+            successes = self.node_pair_successes.get((x, y), [])
+            if k > 0:
+                prob = np.mean(successes) if (len(successes) >= k) else 0.0
             else:
-                prob = 0.0
-            print(f"  ({x} -> {y}): {d:.2f} (success prob: {prob:.2f})")
+                prob = np.mean(successes) if successes else 0.0
+
+            print(f"  ({x} -> {y}) success prob: {prob:.2f})")
 
             if prob > success_threshold:
+                # print(f"  Keeping shortcut ({x} -> {y}) with success prob {prob:.2f}")
                 pruned_pairs.append((x, y))
 
         selected_set = set(pruned_pairs)
@@ -1288,12 +1334,16 @@ class CRLv2Heuristic(BaseHeuristic):
             for source_id, target_id in self.training_data.unique_shortcuts:
                 dist = self.estimate_node_distance(source_id, target_id)
                 shortcut_dists[source_id, target_id] = dist
-            ratios = shortcut_dists / self.node_pair_graph_dists
+            ratios = shortcut_dists / (self.original_node_pair_graph_dists + 1e-8)
+            valid = np.isfinite(ratios) & (self.original_node_pair_graph_dists > 0)
 
             q = self.config.dist_quantile
-            ratio = 1 / np.quantile(ratios[np.isfinite(ratios)], q)
-            if ratio < 1:
-                self.config.dist_scale = ratio
+            if valid.any():
+                ratio = 1 / np.quantile(ratios[valid], q)
+                if not np.isinf(ratio) and ratio > 0:
+                    self.config.dist_scale = ratio if ratio < 1 else 1.0
+                else:
+                    self.config.dist_scale = 1.0
             else:
                 self.config.dist_scale = 1.0
             print(f"  Auto-set dist_scale to {self.config.dist_scale:.4f} (quantile {q})")

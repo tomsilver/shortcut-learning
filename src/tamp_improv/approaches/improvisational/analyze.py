@@ -1,5 +1,6 @@
 """Analysis utilities for improvisational TAMP approaches."""
 
+import random
 from typing import TYPE_CHECKING, TypeVar
 
 import numpy as np
@@ -144,8 +145,11 @@ def execute_edge_once(
 
     for _ in range(max_steps):
         # Get action from skill
-        action = skill.get_action(obs)
-        # print(action)
+        try:
+            action = skill.get_action(obs)
+        except Exception as e:
+            print(f"    Skill raised exception: {e}")
+            break
         if action is None:
             break
 
@@ -628,8 +632,10 @@ def compute_true_node_distance(
     system: ImprovisationalTAMPSystem,
     start_states: list[ObsType],
     goal_node_atoms: set[GroundAtom],
+    max_samples: int = 100,
 ) -> float:
+    sampled = random.sample(start_states, min(max_samples, len(start_states)))
     dists = []
-    for s in start_states:
+    for s in sampled:
         dists.append(compute_true_distance(system, s, goal_node_atoms))
     return np.max(dists)

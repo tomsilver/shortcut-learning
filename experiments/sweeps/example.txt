@@ -1,0 +1,21 @@
+# Sweep file example
+# Format: one experiment per line, space-separated Hydra overrides.
+# Special tokens (stripped before passing to Python):
+#   name=LABEL      human-readable label for job name and output dir
+#   config=NAME     Hydra --config-name (default: gridworld_continuous)
+#   time=HH:MM:SS   SLURM wall-time limit (default: 04:00:00)
+#   gpu=true|false  request MIG GPU partition (default: false)
+# Lines starting with # and blank lines are ignored.
+# Run with:  bash slurm/launch_sweep.sh sweeps/example.txt
+
+# ── gridworld_continuous: SAC variants ───────────────────────────────────────
+name=sac_residual  config=gridworld_continuous  time=04:00:00  gpu=true   heuristic.type=sac_v2  heuristic.sac.residualize=true   heuristic.max_shortcuts_per_graph=1000  seed=42
+name=sac_vanilla   config=gridworld_continuous  time=04:00:00  gpu=true   heuristic.type=sac_v2  heuristic.sac.residualize=false  heuristic.max_shortcuts_per_graph=1000  seed=42
+
+# ── gridworld_continuous: CRL variants ───────────────────────────────────────
+name=crl_10        config=gridworld_continuous  time=08:00:00  gpu=false  heuristic.type=crl_v2  heuristic.max_shortcuts_per_graph=10    seed=42
+name=crl_1000      config=gridworld_continuous  time=08:00:00  gpu=false  heuristic.type=crl_v2  heuristic.max_shortcuts_per_graph=1000  seed=42
+
+# ── unit_test config ──────────────────────────────────────────────────────────
+name=ut_sac        config=unit_test             time=01:00:00  gpu=false  heuristic.type=sac_v2  seed=1
+name=ut_none       config=unit_test             time=01:00:00  gpu=false  heuristic.type=none    seed=1

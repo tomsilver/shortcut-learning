@@ -1,0 +1,88 @@
+name,avg_steps,success_rate
+gw_cmd_1000_ch5,no results found,no results found
+gw_cmd_100_ch5,25.14,1.0
+gw_cmd_10_ch5,25.134,1.0
+gw_cmd_10_sucb100_ch6,25.362,1.0
+gw_cmd_10_sucb10_ch6,25.528,1.0
+gw_cmd_10_sucb1_ch6,25.678,1.0
+gw_cmd_10_ucb100_ch6,25.484,1.0
+gw_cmd_10_ucb10_ch6,25.902,1.0
+gw_cmd_10_ucb1_ch6,25.824,1.0
+gw_cmd_10_unif_ch6,24.926,1.0
+gw_cmd_25_ch5,24.108,1.0
+gw_cmd_50_ch5,23.528,1.0
+gw_cmd_sucb_r1_ch7,26.062,1.0
+gw_cmd_sucb_r2_ch7,27.88,1.0
+gw_cmd_sucb_r3_ch7,27.42,1.0
+gw_cmd_sucb_r4_ch7,27.72,1.0
+gw_cmd_sucb_r5_ch7,27.26,1.0
+gw_cmd_unif_r1_ch7,25.328,1.0
+gw_cmd_unif_r2_ch7,24.95,1.0
+gw_cmd_unif_r3_ch7,25.36,1.0
+gw_cmd_unif_r4_ch7,24.938,1.0
+gw_cmd_unif_r5_ch7,25.152,1.0
+gw_crl_1000_ch5,no results found,no results found
+gw_crl_100_ch5,24.74,1.0
+gw_crl_10_ch5,25.464,1.0
+gw_crl_10_sucb100_ch6,25.786,1.0
+gw_crl_10_sucb10_ch6,26.34,1.0
+gw_crl_10_sucb1_ch6,26.106,1.0
+gw_crl_10_ucb100_ch6,26.134,1.0
+gw_crl_10_ucb10_ch6,25.986,1.0
+gw_crl_10_ucb1_ch6,26.19,1.0
+gw_crl_10_unif_ch6,25.728,1.0
+gw_crl_25_ch5,24.83,1.0
+gw_crl_50_ch5,24.044,1.0
+gw_crl_sucb_r1_ch7,25.646,1.0
+gw_crl_sucb_r2_ch7,26.628,1.0
+gw_crl_sucb_r3_ch7,no results found,no results found
+gw_crl_sucb_r4_ch7,no results found,no results found
+gw_crl_sucb_r5_ch7,no results found,no results found
+gw_crl_unif_r1_ch7,26.292,1.0
+gw_crl_unif_r2_ch7,26.628,1.0
+gw_crl_unif_r3_ch7,26.628,1.0
+gw_crl_unif_r4_ch7,26.628,1.0
+gw_crl_unif_r5_ch7,26.628,1.0
+gw_none_0_ch5,26.628,1.0
+gw_none_1000_ch5,no results found,no results found
+gw_none_100_ch5,25.62,1.0
+gw_none_10_ch5,25.79,0.998
+gw_none_25_ch5,25.218,1.0
+gw_none_50_ch5,24.522,1.0
+gw_routs_1000_ch5,25.24,1.0
+gw_routs_100_ch5,23.668,1.0
+gw_routs_10_ch5,25.14,1.0
+gw_routs_25_ch5,24.738,1.0
+gw_routs_50_ch5,23.668,1.0
+gw_sac_1000_ch5,no results found,no results found
+gw_sac_100_ch5,24.84,1.0
+gw_sac_10_ch5,24.602,1.0
+gw_sac_10_estimate_ch5,25.448,1.0
+gw_sac_10_exact_ch5,24.602,1.0
+gw_sac_10_naive_ch5,25.914,1.0
+gw_sac_10_sucb100_ch6,24.43,1.0
+gw_sac_10_sucb10_ch6,24.56,1.0
+gw_sac_10_sucb1_ch6,24.69,1.0
+gw_sac_10_ucb100_ch6,24.664,1.0
+gw_sac_10_ucb10_ch6,24.418,1.0
+gw_sac_10_ucb1_ch6,24.332,1.0
+gw_sac_10_unif_ch6,24.342,1.0
+gw_sac_25_ch5,23.952,1.0
+gw_sac_50_ch5,23.51,1.0
+gw_sac_sucb_r1_ch7,24.448,1.0
+gw_sac_sucb_r2_ch7,25.096,1.0
+gw_sac_sucb_r3_ch7,25.004,1.0
+gw_sac_sucb_r4_ch7,25.09,1.0
+gw_sac_sucb_r5_ch7,24.942,1.0
+gw_sac_unif_r1_ch7,24.35,1.0
+gw_sac_unif_r2_ch7,24.572,1.0
+gw_sac_unif_r3_ch7,24.484,1.0
+gw_sac_unif_r4_ch7,24.592,1.0
+gw_sac_unif_r5_ch7,24.558,1.0
+gw_srouts_1000_ch5,no results found,no results found
+gw_srouts_100_ch5,25.56,1.0
+gw_srouts_10_ch5,25.016,1.0
+gw_srouts_25_ch5,24.556,1.0
+gw_srouts_50_ch5,24.464,1.0
+ut_none,no results found,no results found
+ut_sac,no results found,no results found

@@ -426,6 +426,53 @@ def plot_pruned_shortcuts_on_grid(results: Any, save_dir: Path) -> None:
     plt.close()
     print(f"[SAVED] {save_dir / 'pruned_shortcuts_on_grid.png'}")
 
+
+def plot_virtual_shortcuts_per_round(results: Any, save_dir: Path) -> None:
+    """For each training round, draw the cumulative set of virtually added shortcuts."""
+    if not results.grid_config or not results.node_atoms:
+        print("[SKIP] Missing grid_config or node_atoms for virtual shortcuts plot.")
+        return
+
+    rounds_with_data = [
+        (i, rd) for i, rd in enumerate(results.training_rounds)
+        if rd.get("virtual_shortcuts")
+    ]
+    if not rounds_with_data:
+        print("[SKIP] No virtual_shortcuts recorded in any training round.")
+        return
+
+    n = len(rounds_with_data)
+    fig, axes = plt.subplots(1, n, figsize=(10 * n, 10), squeeze=False)
+
+    for col, (i, rd) in enumerate(rounds_with_data):
+        ax = axes[0][col]
+        draw_grid(ax, results.grid_config, results.node_atoms, draw_portals=True)
+        shortcuts = rd["virtual_shortcuts"]
+
+        for src, tgt in shortcuts:
+            src_rc = node_id_to_rc(src, results.node_atoms)
+            tgt_rc = node_id_to_rc(tgt, results.node_atoms)
+            if src_rc is None or tgt_rc is None:
+                continue
+            x0, y0 = _cell_center(src_rc[0], src_rc[1], results.grid_config)
+            x1, y1 = _cell_center(tgt_rc[0], tgt_rc[1], results.grid_config)
+            arrow = FancyArrowPatch(
+                (x0, y0), (x1, y1),
+                arrowstyle="-|>", mutation_scale=15,
+                linestyle="--", linewidth=1.8, color="tab:orange", alpha=0.8,
+                connectionstyle="arc3,rad=0.15",
+            )
+            ax.add_patch(arrow)
+
+        ax.set_title(f"Round {i + 1} — {len(shortcuts)} virtual shortcuts")
+
+    plt.suptitle("Cumulative virtual shortcuts per round", fontsize=14)
+    plt.tight_layout()
+    plt.savefig(save_dir / "virtual_shortcuts_per_round.png", dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"[SAVED] {save_dir / 'virtual_shortcuts_per_round.png'}")
+
+
 def _pure_planning_distance(
     ep: dict[str, Any],
     grid_config: dict[str, Any],
@@ -841,7 +888,7 @@ def plot_loss_curves_per_round(results: Any, save_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def plot_latent_space(results: Any, save_dir: Path) -> None:
+def plot_latent_space(results: Any, save_dir: Path, method: str = "0-1") -> None:
     """Plot latent space embeddings: nodes as X markers, states as dots.
 
     Nodes and their corresponding states share a color.  Node positions are
@@ -876,7 +923,7 @@ def plot_latent_space(results: Any, save_dir: Path) -> None:
 
     # 2-D projection
     if D > 2:
-        try:
+        if method == "tsne":
             from sklearn.manifold import TSNE  # noqa: PLC0415
 
             all_embs = (
@@ -891,10 +938,12 @@ def plot_latent_space(results: Any, save_dir: Path) -> None:
             node_coords = coords[: len(node_ids)]
             state_coords = coords[len(node_ids) :]
             method_label = "t-SNE"
-        except ImportError:
+        elif method == "0-1":
             node_coords = node_embs[:, :2]
             state_coords = state_embs[:, :2] if len(state_embs) > 0 else state_embs
             method_label = "dims 0–1"
+        else:
+            raise ValueError(f"Unknown method for latent space projection: {method}")
     else:
         node_coords = node_embs
         state_coords = state_embs
@@ -980,11 +1029,12 @@ def main() -> None:
     plot_heuristic_metrics_per_round(results, output_dir)
     plot_estimated_vs_true_distance(results, output_dir)
     plot_pruned_shortcuts_on_grid(results, output_dir)
+    plot_virtual_shortcuts_per_round(results, output_dir)
     plot_eval_distributions(results, output_dir)
     plot_eval_trajectories(results, output_dir)
     plot_pruned_shortcut_rollouts(results, output_dir)
     plot_loss_curves_per_round(results, output_dir)
-    plot_latent_space(results, output_dir)
+    plot_latent_space(results, output_dir, method="0-1")
 
     print("\n[DONE] All visualizations generated.")
 

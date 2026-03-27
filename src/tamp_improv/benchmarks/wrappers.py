@@ -71,9 +71,6 @@ class ImprovWrapper(gym.Env):
         self.goal_atom_set = self.goal_atoms_list[0] if self.goal_atoms_list else set()
 
         self.current_training_idx = 0
-        self.max_episode_steps = training_data.config.get(
-            "max_training_steps_per_shortcut", self.max_episode_steps
-        )
 
     def set_relevant_objects(self, objects):
         """Set relevant objects for observation extraction."""

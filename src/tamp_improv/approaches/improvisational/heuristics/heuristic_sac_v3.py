@@ -39,10 +39,6 @@ from tamp_improv.approaches.improvisational.graph import (
     PlanningGraphNode,
 )
 from tamp_improv.approaches.improvisational.heuristics.base import BaseHeuristic
-from tamp_improv.approaches.improvisational.heuristics.networks import (
-    ContinuousActor,
-    ResidualContinuousActor,
-)
 from tamp_improv.approaches.improvisational.policies.base import (
     GoalConditionedTrainingData,
 )
@@ -150,20 +146,76 @@ class GoalConditionedQNetwork(nn.Module):
         return self.net(x)  # (B, 1)
 
 
+class ContinuousActor(nn.Module):
+    """Squashed-Gaussian actor: π(a | state, goal_atoms).
+
+    Identical to the actor in heuristic_crl_v2.
+    """
+
+    LOG_STD_MIN = -20
+    LOG_STD_MAX = 2
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        atom_dim: int,
+        hidden_dims: list[int] | None = None,
+    ):
+        super().__init__()
+        if hidden_dims is None:
+            hidden_dims = [256, 256]
+        input_dim = state_dim + atom_dim
+        layers: list[nn.Module] = []
+        prev = input_dim
+        for h in hidden_dims:
+            layers += [nn.Linear(prev, h), nn.ReLU()]
+            prev = h
+        self.trunk = nn.Sequential(*layers)
+        self.mean_head = nn.Linear(prev, action_dim)
+        self.log_std_head = nn.Linear(prev, action_dim)
+
+    def forward(
+        self, states: torch.Tensor, goals: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        x = torch.cat([states, goals], dim=-1)
+        features = self.trunk(x)
+        mean = self.mean_head(features)
+        log_std = self.log_std_head(features).clamp(self.LOG_STD_MIN, self.LOG_STD_MAX)
+        return mean, log_std
+
+    def sample(
+        self,
+        states: torch.Tensor,
+        goals: torch.Tensor,
+        deterministic: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        mean, log_std = self.forward(states, goals)
+        if deterministic:
+            return torch.tanh(mean), None
+        std = log_std.exp()
+        dist = torch.distributions.Normal(mean, std)
+        x_t = dist.rsample()
+        action = torch.tanh(x_t)
+        log_prob = dist.log_prob(x_t) - torch.log(1 - action.pow(2) + 1e-6)
+        log_prob = log_prob.sum(dim=-1)  # (B,)
+        return action, log_prob
+
+
 # ── Replay buffer ─────────────────────────────────────────────────────
 
 # Trajectory step: (state_flat, action, reward, next_state_flat, done,
-#                   achieved_atoms_vec, next_achieved_atoms_vec, obs_raw)
-_TrajStep = tuple[NDArray, NDArray, float, NDArray, bool, NDArray, NDArray, Any]
+#                   achieved_atoms_vec, next_achieved_atoms_vec)
+_TrajStep = tuple[NDArray, NDArray, float, NDArray, bool, NDArray, NDArray]
 
 
 class SACReplayBuffer:
-    """Circular replay buffer storing (s, a, r, s', done, goal, obs_raw, goal_node_id)."""
+    """Circular replay buffer storing flat (s, a, r, s', done, goal) tuples."""
 
     def __init__(self, max_size: int):
-        self.buffer: deque[
-            tuple[NDArray, NDArray, float, NDArray, bool, NDArray, Any, int]
-        ] = deque(maxlen=max_size)
+        self.buffer: deque[tuple[NDArray, NDArray, float, NDArray, bool, NDArray]] = (
+            deque(maxlen=max_size)
+        )
 
     def add(
         self,
@@ -173,16 +225,14 @@ class SACReplayBuffer:
         next_state: NDArray,
         done: bool,
         goal: NDArray,
-        obs_raw: Any,
-        goal_node_id: int,
     ) -> None:
-        self.buffer.append((state, action, reward, next_state, done, goal, obs_raw, goal_node_id))
+        self.buffer.append((state, action, reward, next_state, done, goal))
 
     def sample(
         self, batch_size: int
-    ) -> tuple[NDArray, NDArray, NDArray, NDArray, NDArray, NDArray, list, NDArray]:
+    ) -> tuple[NDArray, NDArray, NDArray, NDArray, NDArray, NDArray]:
         batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones, goals, obs_raws, goal_node_ids = zip(*batch)
+        states, actions, rewards, next_states, dones, goals = zip(*batch)
         return (
             np.array(states, dtype=np.float32),
             np.array(actions, dtype=np.float32),
@@ -190,8 +240,6 @@ class SACReplayBuffer:
             np.array(next_states, dtype=np.float32),
             np.array(dones, dtype=np.float32).reshape(-1, 1),
             np.array(goals, dtype=np.float32),
-            list(obs_raws),
-            np.array(goal_node_ids, dtype=np.int64),
         )
 
     def __len__(self) -> int:
@@ -280,14 +328,9 @@ class SACv2Heuristic(BaseHeuristic):
         actor_hidden_dims = self.config.actor_hidden_dims or hidden_dims
         atom_dim = self.config.max_atom_size
 
-        if self.config.residualize:
-            self.actor = ResidualContinuousActor(
-                self.state_dim, self.action_dim, atom_dim, actor_hidden_dims
-            ).to(device)
-        else:
-            self.actor = ContinuousActor(
-                self.state_dim, self.action_dim, atom_dim, actor_hidden_dims
-            ).to(device)
+        self.actor = ContinuousActor(
+            self.state_dim, self.action_dim, atom_dim, actor_hidden_dims
+        ).to(device)
         self.q1 = GoalConditionedQNetwork(
             self.state_dim, self.action_dim, atom_dim, hidden_dims
         ).to(device)
@@ -348,14 +391,9 @@ class SACv2Heuristic(BaseHeuristic):
         actor_hidden_dims = self.config.actor_hidden_dims or (
             self.config.hidden_dims or [256, 256]
         )
-        if self.config.residualize:
-            self.actor = ResidualContinuousActor(
-                self.state_dim, self.action_dim, self.config.max_atom_size, actor_hidden_dims
-            ).to(device)
-        else:
-            self.actor = ContinuousActor(
-                self.state_dim, self.action_dim, self.config.max_atom_size, actor_hidden_dims
-            ).to(device)
+        self.actor = ContinuousActor(
+            self.state_dim, self.action_dim, self.config.max_atom_size, actor_hidden_dims
+        ).to(device)
         self.actor_optimizer = torch.optim.Adam(
             self.actor.parameters(), lr=self.config.actor_lr
         )
@@ -379,8 +417,8 @@ class SACv2Heuristic(BaseHeuristic):
         for epoch in range(self.config.num_epochs_per_round):
             # Collect trajectories
             for _ in range(self.config.trajectories_per_epoch):
-                trajectory, goal_vec, target_id = self._collect_trajectory()
-                self._add_to_buffer_with_her(trajectory, goal_vec, target_id)
+                trajectory, goal_vec = self._collect_trajectory()
+                self._add_to_buffer_with_her(trajectory, goal_vec)
 
             # Update networks
             if (epoch + 1) % self.config.learn_frequency == 0:
@@ -410,13 +448,12 @@ class SACv2Heuristic(BaseHeuristic):
             "buffer_size": len(self.replay_buffer),
         }
 
-    def _collect_trajectory(self) -> tuple[list[_TrajStep], NDArray, int]:
+    def _collect_trajectory(self) -> tuple[list[_TrajStep], NDArray]:
         """Collect one trajectory using current actor.
 
         Returns:
-            trajectory: list of (s, a, r, s', done, achieved_vec, next_achieved_vec, obs_raw)
+            trajectory: list of (s, a, r, s', done, achieved_vec, next_achieved_vec)
             goal_vec: multi-hot goal atom vector used during collection
-            target_id: goal node ID (needed for base action lookup in buffer)
         """
         node_ids = list(self.training_data.node_states.keys())
 
@@ -483,18 +520,17 @@ class SACv2Heuristic(BaseHeuristic):
             done = terminated or truncated or goal_reached
 
             trajectory.append(
-                (state_flat, action, reward, next_flat, done, achieved_vec, next_achieved_vec,
-                 current_state)
+                (state_flat, action, reward, next_flat, done, achieved_vec, next_achieved_vec)
             )
 
             if done:
                 break
             current_state = next_state
 
-        return trajectory, goal_vec, target_id
+        return trajectory, goal_vec
 
     def _add_to_buffer_with_her(
-        self, trajectory: list[_TrajStep], goal_vec: NDArray, target_id: int
+        self, trajectory: list[_TrajStep], goal_vec: NDArray
     ) -> None:
         """Add real transitions and HER-relabelled transitions to the buffer."""
         if not trajectory:
@@ -502,13 +538,13 @@ class SACv2Heuristic(BaseHeuristic):
 
         T = len(trajectory)
 
-        # Real transitions (goal_node_id = target_id, known at collection time)
-        for s, a, r, s_, done, _, _, obs_raw in trajectory:
-            self.replay_buffer.add(s, a, r, s_, done, goal_vec, obs_raw, target_id)
+        # Real transitions
+        for s, a, r, s_, done, _, _ in trajectory:
+            self.replay_buffer.add(s, a, r, s_, done, goal_vec)
 
-        # HER transitions — resolve goal node ID from the achieved atom vector
+        # HER transitions
         for t in range(T):
-            s, a, _, s_, done, _, next_achieved_vec, obs_raw = trajectory[t]
+            s, a, _, s_, done, _, next_achieved_vec = trajectory[t]
 
             if self.config.her_strategy == "final":
                 her_indices = [T - 1]
@@ -521,7 +557,6 @@ class SACv2Heuristic(BaseHeuristic):
             for t_her in her_indices:
                 # Goal = atoms achieved at step t_her
                 her_goal_vec = trajectory[t_her][5]  # achieved_vec at t_her
-                her_goal_node_id = self._find_node_for_goal_vec(her_goal_vec)
 
                 # Reward: 0 if next state satisfies the HER goal
                 goal_atoms_active = her_goal_vec > 0.5
@@ -531,9 +566,7 @@ class SACv2Heuristic(BaseHeuristic):
                     else -1.0
                 )
                 her_done = her_r == 0.0 or done
-                self.replay_buffer.add(
-                    s, a, her_r, s_, her_done, her_goal_vec, obs_raw, her_goal_node_id
-                )
+                self.replay_buffer.add(s, a, her_r, s_, her_done, her_goal_vec)
 
     def _select_action(
         self, state_flat: NDArray, goal_vec: NDArray, deterministic: bool = False
@@ -550,8 +583,8 @@ class SACv2Heuristic(BaseHeuristic):
         """One SAC gradient step. Returns (critic_loss, actor_loss)."""
         device = torch.device(self.config.device)
 
-        states, actions, rewards, next_states, dones, goals, obs_raw_list, goal_node_ids = (
-            self.replay_buffer.sample(self.config.batch_size)
+        states, actions, rewards, next_states, dones, goals = self.replay_buffer.sample(
+            self.config.batch_size
         )
         s = torch.FloatTensor(states).to(device)
         a = torch.FloatTensor(actions).to(device)
@@ -583,13 +616,7 @@ class SACv2Heuristic(BaseHeuristic):
         self.critic_optimizer.step()
 
         # ── Actor update ─────────────────────────────────────────────
-        # Compute live base actions for this batch (using current skill policy)
-        if isinstance(self.actor, ResidualContinuousActor):
-            base_actions_np = self._get_base_actions_batch(obs_raw_list, goal_node_ids)
-            base_actions_tensor = torch.FloatTensor(base_actions_np).to(device)
-            new_a, log_p = self.actor.sample(s, g, base_actions_tensor)
-        else:
-            new_a, log_p = self.actor.sample(s, g)
+        new_a, log_p = self.actor.sample(s, g)
         q1_new = self.q1(s, new_a, g)
         q2_new = self.q2(s, new_a, g)
         actor_loss = (alpha * log_p.unsqueeze(1) - torch.min(q1_new, q2_new)).mean()
@@ -639,55 +666,13 @@ class SACv2Heuristic(BaseHeuristic):
         for p, pt in zip(self.q2.parameters(), self.q2_target.parameters()):
             pt.data.copy_(tau * p.data + (1.0 - tau) * pt.data)
 
-    def _get_base_actions_batch(
-        self,
-        obs_list: list[Any],
-        goal_node_ids: NDArray,
-    ) -> NDArray:
-        """Compute base skill actions for a batch of (obs, goal_node_id) pairs.
-
-        Uses stored node atoms for edge lookup, then calls skill.get_action on the raw
-        observation. Returns zeros for transitions where no matching edge/skill is found.
-
-        Args:
-            obs_list: raw observations at each sampled timestep
-            goal_node_ids: (batch_size,) goal node IDs (-1 when no node matched)
-
-        Returns:
-            base_actions: (batch_size, action_dim) float32 array
-        """
-        batch_size = len(obs_list)
-        base_actions = np.zeros((batch_size, self.action_dim), dtype=np.float32)
-
-        if not self.config.residualize or self.first_edge_dict is None:
-            return base_actions
-
-        for i in range(batch_size):
-            if goal_node_ids[i] < 0:
-                continue
-            start_atoms = self.system.perceiver.step(obs_list[i])
-            goal_atoms = self._node_atoms_dict.get(int(goal_node_ids[i]), set())
-            edge = self.first_edge_dict.get(
-                (frozenset(start_atoms), frozenset(goal_atoms)), None
-            )
-            if edge is None:
-                continue
-            operator = edge.operator
-            skills = [sk for sk in self.system.skills if sk.can_execute(operator)]
-            if not skills:
-                continue
-            skill = skills[0]
-            skill.reset(operator)
-            base_actions[i] = np.array(skill.get_action(obs_list[i]), dtype=np.float32)
-
-        return base_actions
-
     # ── Action + distance interface ───────────────────────────────────
 
     def get_action(self, obs: "ObsType", target_node: int) -> NDArray:
         state_flat = self._flatten_state(obs)
         target_atoms = self._node_atoms_dict.get(target_node, set())
         goal_vec = self.create_atom_vector(target_atoms)
+        actor_action = self._select_action(state_flat, goal_vec, deterministic=True)
 
         if self.config.residualize and self.first_edge_dict is not None:
             start_atoms = self.system.perceiver.step(obs)
@@ -705,16 +690,10 @@ class SACv2Heuristic(BaseHeuristic):
                 skill.reset(operator)
                 base_action = skill.get_action(obs)
             else:
-                base_action = np.zeros(self.action_dim, dtype=np.float32)
-            device = torch.device(self.config.device)
-            with torch.no_grad():
-                s_t = torch.FloatTensor(state_flat).unsqueeze(0).to(device)
-                g_t = torch.FloatTensor(goal_vec).unsqueeze(0).to(device)
-                base_t = torch.FloatTensor(base_action).unsqueeze(0).to(device)
-                action, _ = self.actor.sample(s_t, g_t, base_t, deterministic=True)
-            return action.squeeze(0).cpu().numpy()
+                base_action = np.zeros_like(actor_action)
+            return actor_action + base_action
 
-        return self._select_action(state_flat, goal_vec, deterministic=True)
+        return actor_action
 
     def estimate_distance(self, source_state: "ObsType", target_node: int) -> float:
         """Estimate distance via min(Q1, Q2) at actor's deterministic action.
@@ -941,17 +920,6 @@ class SACv2Heuristic(BaseHeuristic):
         if hasattr(state, "nodes"):
             return state.nodes.flatten().astype(np.float32)
         return np.array(state).flatten().astype(np.float32)
-
-    def _find_node_for_goal_vec(self, goal_vec: NDArray) -> int:
-        """Return the node ID whose atom set matches goal_vec, or -1 if not found."""
-        active_indices = frozenset(np.where(goal_vec > 0.5)[0].tolist())
-        for node_id, atoms in self._node_atoms_dict.items():
-            node_indices = frozenset(
-                self.atom_to_index[str(a)] for a in atoms if str(a) in self.atom_to_index
-            )
-            if node_indices == active_indices:
-                return node_id
-        return -1
 
     def _find_node_for_atoms(self, atoms: set) -> int | None:
         for node_id, node_atoms in self._node_atoms_dict.items():

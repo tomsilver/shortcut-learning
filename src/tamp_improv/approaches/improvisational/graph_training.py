@@ -265,10 +265,6 @@ def compute_graph_distances(
                 # Get path-dependent edge cost using the same logic as evaluation
                 edge_cost = edge.get_cost(current_path)
 
-                print("Edge cost:", edge_cost)
-                print("Edge.cost:", edge.cost)
-                print("Edge.max_cost:", edge.max_cost)
-
                 # If this is the first edge from the source node, add the average cost rather than the max cost
                 # to prevent an overestimate
                 if current_id == source_node.id:

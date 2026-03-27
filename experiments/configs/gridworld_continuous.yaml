@@ -1,5 +1,5 @@
 seed: 42
-debug: true
+debug: false
 render_mode: null
 eval_heuristic_only: false
 wandb_enabled: false
@@ -7,9 +7,10 @@ wandb_enabled: false
 env:
   name: GridworldContinuousTAMPSystem
   # Gridworld
-  num_cells: 3
+  num_cells: 5
   num_states_per_cell: 10
   num_teleporters: 0
+  pacman: false
 
   # Blocks
   n_blocks: 2
@@ -21,6 +22,8 @@ collection:
   max_steps_per_edge: 100
   planner_id: pyperplan
   num_cost_rollouts: 100
+  load_data: false
+  training_data_path: null
 
 heuristic:
   # Heuristic Parameters
@@ -28,7 +31,6 @@ heuristic:
 
   # Pruning Parameters
   max_shortcuts_per_graph: 10
-  threshold: 0.05
 
   # Multi-train parameters
   num_rounds: 1
@@ -36,10 +38,17 @@ heuristic:
 
 
   # Rollout Heuristic Parameters
-  use_random_rollouts: true
-  num_rollouts_per_node: 100
-  max_steps_per_rollout: 100
-  action_scale: 1.0
+  rollouts:
+    use_random_rollouts: true
+    num_rollouts_per_node: 100
+    max_steps_per_rollout: 100
+    max_episode_steps: 100
+    action_scale: 1.0
+    success_threshold: 0.10
+    gain_method: exact
+    auto_dist_scale: false
+    dist_scale: 1.0
+    dist_quantile: 0.9
 
   # CRL Heuristic Parameters (both v1 and v2)
   crl:
@@ -47,46 +56,43 @@ heuristic:
     latent_dim: 16
     normalize_embeddings: true
     learning_rate: 1e-3
-    batch_size: 256
+    batch_size: 64
     buffer_size: 100000
     gamma: 0.99
     repetition_factor: 2
     policy_temperature: 0.3
-    iters_per_epoch: 100
+    iters_per_epoch: 10
     learn_frequency: 1
-    num_action_samples: 4
 
-    num_epochs_per_round: 300  # Epochs per round (used as num_epochs_per_round in multi_train)
+    num_epochs_per_round: 500  # Epochs per round (used as num_epochs_per_round in multi_train)
     trajectories_per_epoch: 10
     max_episode_steps: 100
-
-    eval_rollouts: 1
-    eval_temperature: 0.3
-    eval_max_steps: 10
 
     # CRL V2 specific parameters
     actor_hidden_dims: [64, 64]
     goal_encoder_hidden_dims: [32]
-    critic_lr: 1e-3
+    critic_lr: 3e-4
     actor_lr: 3e-4
     max_atom_size: 100
     grad_clip: 1.0
 
-    ucb_beta: 1.0  # UCB exploration parameter
+    ucb_beta: 100  # UCB exploration parameter
     sampling_method: uniform  # Options: uniform, ucb
     gain_method: exact # Options: exact, estimate, naive
     dist_scale: 1.0  # Scaling factor for distance in gain calculation
-    dist_quantile: 1.0  # Quantile for distance scaling when computing gains
-    auto_dist_scale: false  # Whether to automatically set dist_scale based on quantile
+    dist_quantile: 0.9  # Quantile for distance scaling when computing gains
+    auto_dist_scale: true  # Whether to automatically set dist_scale based on quantile
     residualize: false  # Whether to residualize actor actions with base skill actions
+
+    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
   # SAC V2 heuristic parameters
   sac:
     actor_lr: 3e-4
     critic_lr: 3e-4
-    hidden_dims: [256, 256]
-    actor_hidden_dims: [256, 256]
-    batch_size: 256
+    hidden_dims: [64, 64]
+    actor_hidden_dims: [64, 64]
+    batch_size: 64
     buffer_size: 100000
     gamma: 0.99
     tau: 0.005
@@ -96,9 +102,11 @@ heuristic:
     her_n_sampled_goal: 4
     her_strategy: future
     trajectories_per_epoch: 10
-    num_epochs_per_round: 250
+    num_epochs_per_round: 500
     max_episode_steps: 100
     learn_frequency: 1
+    gain_update_frequency: 10
+    medoid_update_frequency: 10
     iters_per_epoch: 100
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -111,10 +119,12 @@ heuristic:
     ucb_beta: 1.0
     gain_method: exact
     dist_scale: 1.0
-    dist_quantile: 1.0
+    dist_quantile: 0.9
     auto_dist_scale: false
     residualize: false
     max_atom_size: 50
+
+    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
 
 policy:
@@ -130,7 +140,7 @@ policy:
   early_stopping: false
   early_stopping_patience: 10
   max_episode_steps: 100
-  episodes_per_scenario: 1
+  episodes_per_scenario: 100
   training_record_interval: 100
 
   eval_rollouts: 10
@@ -139,7 +149,7 @@ policy:
 evaluation:
   render: false
   fast_eval: false
-  num_episodes: 50
+  num_episodes: 500
   max_episode_steps: 100
 
 

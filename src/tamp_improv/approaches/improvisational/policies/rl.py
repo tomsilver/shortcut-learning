@@ -34,6 +34,11 @@ class RLConfig:
     ent_coef: float = 0.01
     device: str = "cuda"
     deterministic: bool = False
+    episodes_per_scenario: int = 2
+    max_episode_steps: int = 100
+    training_record_interval: int = 100
+    early_stopping: bool = False
+    early_stopping_patience: int = 10
 
 
 class TrainingProgressCallback(BaseCallback):
@@ -318,7 +323,7 @@ class RLPolicy(Policy[ObsType, ActType]):
             "MlpPolicy",
             env,
             learning_rate=self.config.learning_rate,
-            n_steps=train_data.config.get("max_training_steps_per_shortcut", 100),
+            n_steps=self.config.max_episode_steps,
             batch_size=self.config.batch_size,
             n_epochs=self.config.n_epochs,
             gamma=self.config.gamma,
@@ -330,11 +335,11 @@ class RLPolicy(Policy[ObsType, ActType]):
 
         if callback is None:
             callback = TrainingProgressCallback(
-                check_freq=train_data.config.get("training_record_interval", 100)
+                check_freq=self.config.training_record_interval
             )
 
-        episodes_per_scenario = train_data.config.get("episodes_per_scenario", 2)
-        max_steps = train_data.config.get("max_training_steps_per_shortcut", 100)
+        episodes_per_scenario = self.config.episodes_per_scenario
+        max_steps = self.config.max_episode_steps
         total_timesteps = len(train_data.states) * episodes_per_scenario * max_steps
 
         print("Training Settings:")

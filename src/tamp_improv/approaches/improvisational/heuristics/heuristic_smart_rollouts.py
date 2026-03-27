@@ -1,12 +1,20 @@
-"""Rollout-based heuristic for shortcut evaluation."""
+"""Rollout-based heuristic with exact gain computation.
+
+Performs random rollouts to estimate shortcut distances, then uses the same
+exact/estimate/naive gain methods as sac_v2/crl_v2/cmd_v2 for greedy pruning.
+"""
 
 from collections import defaultdict
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import gymnasium as gym
 import numpy as np
 
-from tamp_improv.approaches.improvisational.heuristics.base import BaseHeuristic
+from tamp_improv.approaches.improvisational.heuristics.base import (
+    BaseHeuristic,
+    random_selection,
+)
 from tamp_improv.approaches.improvisational.policies.base import (
     GoalConditionedTrainingData,
 )
@@ -16,16 +24,25 @@ if TYPE_CHECKING:
     from tamp_improv.benchmarks.base import ImprovisationalTAMPSystem
 
 
+@dataclass
+class SmartRolloutsConfig:
+    num_rollouts_per_node: int = 100
+    max_steps_per_rollout: int = 100
+    max_episode_steps: int = 100
+    success_threshold: float = 0.01
+    action_scale: float = 1.0
+    gain_method: str = "exact"          # "exact", "estimate", or "naive"
+    auto_dist_scale: bool = True
+    dist_scale: float = 1.0
+    dist_quantile: float = 0.9
+
+
 class SmartRolloutsHeuristic(BaseHeuristic):
-    """Smart rollout-based heuristic for evaluating shortcuts.
+    """Random-rollout heuristic with exact gain-based greedy pruning.
 
-    This heuristic performs random rollouts from source nodes to
-    evaluate which target nodes are reachable. The rollouts are executed
-    during multi_train(), and the results (success counts) are cached
-    for use in estimate_node_distance() and prune().
-
-    The average length indicates how often a target node is reached
-    within the rollout horizon.
+    Rollouts estimate shortcut distances (mean success length). Pruning uses
+    the same exact/estimate/naive gain methods as sac_v2/crl_v2/cmd_v2 so that
+    shortcut selection is comparable across heuristic types.
     """
 
     def __init__(
@@ -33,42 +50,26 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         training_data: "GoalConditionedTrainingData",
         graph_distances: dict[tuple[int, int], float],
         system: "ImprovisationalTAMPSystem",
-        num_rollouts: int = 1000,
-        max_steps_per_rollout: int = 100,
-        threshold: float = 0.01,
-        action_scale: float = 1.0,
+        rng: np.random.Generator,
         seed: int = 42,
+        config: SmartRolloutsConfig | None = None,
     ):
-        """Initialize rollouts heuristic.
-
-        Args:
-            training_data: Full training data from collect_total_shortcuts
-            graph_distances: Dict mapping (source_node, target_node) -> graph distance
-            system: TAMP system for executing rollouts
-            num_rollouts: Number of rollouts per source node
-            max_steps_per_rollout: Maximum steps per rollout
-            threshold: Success rate threshold for pruning (0-1)
-            action_scale: Scale factor for action sampling
-            seed: Random seed for action sampling
-        """
         super().__init__(training_data, graph_distances)
         self.system = system
-        self.num_rollouts = num_rollouts
-        self.max_steps_per_rollout = max_steps_per_rollout
-        self.threshold = threshold
-        self.action_scale = action_scale
+        self.rng = rng
         self.seed = seed
+        self.config = config or SmartRolloutsConfig()
 
-        # Cache for success counts: (source_node, target_node) -> count
-        # Populated during multi_train()
+        # Cache populated during train_one_round()
         self._success_counts: dict[tuple[int, int], int] | None = None
+        self._success_lens: dict[tuple[int, int], list[int]] | None = None
 
-        # Setup action sampling space
+        # Action sampling space
         raw_env = system.env
         if isinstance(raw_env.action_space, gym.spaces.Box):
             self.sampling_space = gym.spaces.Box(
-                low=raw_env.action_space.low * action_scale,
-                high=raw_env.action_space.high * action_scale,
+                low=raw_env.action_space.low * self.config.action_scale,
+                high=raw_env.action_space.high * self.config.action_scale,
                 dtype=np.float32,
             )
         else:
@@ -76,89 +77,73 @@ class SmartRolloutsHeuristic(BaseHeuristic):
             self.sampling_space = raw_env.action_space
         self.sampling_space.seed(seed)
 
-        # Pre-compute target node atom sets from training_data.node_atoms
         self._target_atoms_by_id = dict(training_data.node_atoms)
 
+        # Pre-compute valid targets per source node as a set for O(1) lookup
+        self._valid_targets: dict[int, set[int]] = {}
+        for source_id, target_id in training_data.valid_shortcuts:
+            self._valid_targets.setdefault(source_id, set()).add(target_id)
+
+        # Node bookkeeping (mirrors sac_v2 layout)
+        self.num_nodes = len(training_data.node_states)
+        self.node_pair_graph_dists = np.full(
+            (self.num_nodes, self.num_nodes), np.inf
+        )
+        for (i, j), dist in graph_distances.items():
+            self.node_pair_graph_dists[i, j] = dist
+        np.fill_diagonal(self.node_pair_graph_dists, 0.0)
+
+        self.node_pair_gains = np.zeros((self.num_nodes, self.num_nodes))
+
+    # ── Training ──────────────────────────────────────────────────────
+
     def multi_train(self, **kwargs: Any) -> dict[str, Any]:
-        """Run rollouts to evaluate all shortcuts.
+        """Stub — pipeline calls train_one_round() directly."""
+        return {}
 
-        This performs the actual work of the rollouts heuristic by executing
-        random rollouts and counting successes.
+    def train_one_round(self) -> dict[str, Any]:
+        """Run random rollouts to populate distance estimates."""
+        print(f"\nRunning smart rollouts:")
+        print(f"  Rollouts per node: {self.config.num_rollouts_per_node}")
+        print(f"  Max steps per rollout: {self.config.max_steps_per_rollout}")
 
-        Returns:
-            Dictionary with rollout statistics
-        """
-        print(f"\nRunning rollouts:")
-        print(f"  Rollouts per node: {self.num_rollouts}")
-        print(f"  Max steps per rollout: {self.max_steps_per_rollout}")
-        print(f"  Total shortcuts: {len(self.training_data.valid_shortcuts)}")
-
-        # Track how many times each shortcut succeeds
         shortcut_success_counts: defaultdict[tuple[int, int], int] = defaultdict(int)
         shortcut_lengths: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
 
-        # Get the environment for running rollouts
         raw_env = self.system.env
-
-        # Perform rollouts from each source node
         total_rollouts = 0
+
         for source_id, source_states in self.training_data.node_states.items():
             if not source_states:
                 continue
 
             source_atoms = self._target_atoms_by_id.get(source_id, set())
-
             print(
-                f"\nPerforming {self.num_rollouts} rollouts by randomly sampling from "
-                f"{len(source_states)} state(s) from node {source_id}",
+                f"\nPerforming {self.config.num_rollouts_per_node} rollouts from node {source_id} "
+                f"({len(source_states)} source state(s))",
                 flush=True,
             )
 
-            # Sample from source_states exactly self.num_rollouts times
-            for rollout_idx in range(self.num_rollouts):
+            for rollout_idx in range(self.config.num_rollouts_per_node):
                 if rollout_idx > 0 and rollout_idx % 100 == 0:
-                    print(
-                        f"  Completed {rollout_idx}/{self.num_rollouts} rollouts",
-                        flush=True,
-                    )
+                    print(f"  Completed {rollout_idx}/{self.config.num_rollouts_per_node} rollouts", flush=True)
 
-                # Randomly sample a source state
-                state_idx = np.random.randint(0, len(source_states))
-                source_state = source_states[state_idx]
-
-                # Reset to source state
-                raw_env.reset_from_state(source_state)
+                state_idx = self.rng.integers(0, len(source_states))
+                raw_env.reset_from_state(source_states[state_idx])
                 curr_atoms = source_atoms.copy()
-
-                # Track which nodes we've reached in this rollout
                 reached_in_this_rollout: set[int] = set()
 
-                # Execute random rollout
-                for step_idx in range(self.max_steps_per_rollout):
+                for step_idx in range(self.config.max_steps_per_rollout):
                     action = self.sampling_space.sample()
                     obs, _, terminated, truncated, _ = raw_env.step(action)
                     curr_atoms = self.system.perceiver.step(obs)
 
-                    # Check if we've reached any target nodes
-                    for target_id in self.training_data.node_states.keys():
-                        # Skip if not a valid shortcut
-                        if (
-                            source_id,
-                            target_id,
-                        ) not in self.training_data.valid_shortcuts:
-                            continue
-
-                        # Skip if already reached in this rollout
-                        if target_id in reached_in_this_rollout:
-                            continue
-
-                        # Check if atoms match target node
+                    valid_targets = self._valid_targets.get(source_id, set())
+                    for target_id in valid_targets - reached_in_this_rollout:
                         target_atoms = self._target_atoms_by_id.get(target_id)
                         if target_atoms and target_atoms == curr_atoms:
                             shortcut_success_counts[(source_id, target_id)] += 1
-                            shortcut_lengths[(source_id, target_id)].append(
-                                step_idx + 1
-                            )
+                            shortcut_lengths[(source_id, target_id)].append(step_idx + 1)
                             reached_in_this_rollout.add(target_id)
 
                     if terminated or truncated:
@@ -166,215 +151,215 @@ class SmartRolloutsHeuristic(BaseHeuristic):
 
                 total_rollouts += 1
 
-            # Print progress after completing all rollouts for this node
-            print(
-                f"  Completed all {self.num_rollouts} rollouts from node {source_id}",
-                flush=True,
-            )
+            print(f"  Completed all {self.config.num_rollouts_per_node} rollouts from node {source_id}", flush=True)
 
         print("\nRollout results:")
-        for (source_id, target_id), count in shortcut_success_counts.items():
-            success_rate = count / self.num_rollouts if self.num_rollouts > 0 else 0.0
+        for (src, tgt), count in shortcut_success_counts.items():
+            sr = count / self.config.num_rollouts_per_node if self.config.num_rollouts_per_node > 0 else 0.0
             avg_len = (
-                np.mean(shortcut_lengths[(source_id, target_id)])
-                if shortcut_lengths[(source_id, target_id)]
-                else self.max_steps_per_rollout
+                float(np.mean(shortcut_lengths[(src, tgt)]))
+                if shortcut_lengths[(src, tgt)]
+                else self.config.max_steps_per_rollout
             )
-            print(
-                f"  Shortcut ({source_id} -> {target_id}): {count} successes ({success_rate:.2%}), avg length: {avg_len:.1f}"
-            )
+            print(f"  ({src} -> {tgt}): {count} successes ({sr:.2%}), avg length: {avg_len:.1f}")
 
-        # Store results
         self._success_counts = dict(shortcut_success_counts)
         self._success_lens = dict(shortcut_lengths)
-        print("Success counts:", self._success_counts)
 
-        # Return training history
+        self._update_gains()
+
         return {
-            "method": "rollouts",
+            "method": "smart_rollouts",
             "total_rollouts": total_rollouts,
-            "num_shortcuts_evaluated": len(self.training_data.valid_shortcuts),
             "success_counts": self._success_counts,
-            "success_lengths": self._success_lens,
         }
 
+    # ── Distance estimation ───────────────────────────────────────────
+
     def estimate_distance(self, state: "ObsType", target_node: int) -> float:
-        """Estimate distance from state to target node using rollouts.
-
-        For rollouts, we return (1 - success_rate) * max_steps as a distance proxy.
-        Higher success rate = lower distance.
-
-        Note: This uses node-level estimates since rollouts are run per-node.
-
-        Args:
-            state: Source state
-            target_node: Target node ID
-
-        Returns:
-            Distance estimate
-        """
-        # Find source node for this state (linear search, inefficient)
         for node_id, states in self.training_data.node_states.items():
             for s in states:
-                # Simple equality check - may not work for all state types
                 if np.array_equal(np.array(s), np.array(state)):
                     return self.estimate_node_distance(node_id, target_node)
-
-        # No match found, assume far away
-        return float(self.max_steps_per_rollout)
+        return float(self.config.max_steps_per_rollout)
 
     def estimate_node_distance(self, source_node: int, target_node: int) -> float:
-        """Estimate distance between nodes using rollout success rate.
-
-        Returns avg success length of shortcut, or max_steps if never reached.
-
-        Args:
-            source_node: Source node ID
-            target_node: Target node ID
-
-        Returns:
-            Distance estimate
-        """
-        # print(self._success_counts, self._success_counts is None)
+        """Return mean rollout success length, or max_steps if never reached."""
         if self._success_lens is None:
-            raise RuntimeError(
-                "Must call multi_train() before estimate_node_distance()"
-            )
-
+            raise RuntimeError("Must call train_one_round() before estimate_node_distance()")
         lengths = self._success_lens.get((source_node, target_node), [])
         if lengths:
-            return float(np.mean(lengths))
-        else:
-            return float(self.max_steps_per_rollout)
+            return self.config.dist_scale * float(np.mean(lengths))
+        return float(self.config.max_steps_per_rollout)
 
-    def estimate_probability(self, source_node: int, target_node: int) -> float:
-        """Estimate probability of policy convergence, using a heuristic that
-        it follows a step function based on random rollout success rate."""
+    # ── Gain methods (identical to sac_v2 / crl_v2 / cmd_v2) ─────────
 
-        if self._success_counts is None:
-            raise RuntimeError("Must call multi_train() before estimate_probability()")
+    def exact_gain(self, source_node: int, target_node: int) -> float:
+        x, y = source_node, target_node
+        d = self.node_pair_graph_dists
+        L = self.estimate_node_distance(x, y)
 
-        success_count = self._success_counts.get((source_node, target_node), 0)
-        p_rr = success_count / self.num_rollouts if self.num_rollouts > 0 else 0.0
+        U = np.where(np.isfinite(d[:, x]))[0]
+        V = np.where(np.isfinite(d[y, :]))[0]
 
-        k = np.log(0.5) / np.log(1 - self.threshold)
-        return 1 - (1 - p_rr) ** k
+        new_paths = d[U, x][:, None] + L + d[y, V][None, :]
+        old_paths = np.minimum(d[np.ix_(U, V)], self.config.max_episode_steps)
+        return float(np.sum(np.maximum(0, old_paths - new_paths)))
 
     def estimate_gain(self, source_node: int, target_node: int) -> float:
-        """Estimate gain of training on a shortcut, relative to distance in the
-        initial graph.
+        x, y = source_node, target_node
+        d = np.clip(self.node_pair_graph_dists, 0, self.config.max_episode_steps)
+        L = self.estimate_node_distance(x, y)
 
-        Higher gain means more useful shortcut.
-        """
+        delta_in = d[:, y] - (d[:, x] + L)
+        delta_in = delta_in[delta_in > 0]
+        if delta_in.size == 0:
+            return 0.0
+        delta_out = d[x, :] - (L + d[y, :])
+        delta_out = delta_out[delta_out > 0]
+        if delta_out.size == 0:
+            return 0.0
+        return float(np.sum(np.minimum(delta_in[:, None], delta_out[None, :])))
 
-        graph_distance = self.graph_distances.get(
-            (source_node, target_node), float("inf")
-        )
-        estimated_distance = self.estimate_node_distance(source_node, target_node)
+    def naive_gain(self, source_node: int, target_node: int) -> float:
+        L = self.estimate_node_distance(source_node, target_node)
+        d_xy = self.node_pair_graph_dists[source_node, target_node]
+        return float(np.clip(d_xy - L, 0, self.config.max_episode_steps))
 
-        gain = np.clip(
-            graph_distance - estimated_distance, 0, self.max_steps_per_rollout
-        )
-        return gain
+    def get_gain(self, source_node: int, target_node: int) -> float:
+        if self.config.gain_method == "exact":
+            return self.exact_gain(source_node, target_node)
+        if self.config.gain_method == "estimate":
+            return self.estimate_gain(source_node, target_node)
+        if self.config.gain_method == "naive":
+            return self.naive_gain(source_node, target_node)
+        raise ValueError(f"Unknown gain_method: {self.config.gain_method}")
 
-    def prune(
-        self, max_shortcuts: int | None, **kwargs: Any
+    def _update_gains(self) -> None:
+        print("\nUpdating node pair gains...")
+
+        if self.config.auto_dist_scale:
+            self.config.dist_scale = 1.0
+            shortcut_dists = np.zeros((self.num_nodes, self.num_nodes))
+            for src, tgt in self.training_data.unique_shortcuts:
+                shortcut_dists[src, tgt] = self.estimate_node_distance(src, tgt)
+            ratios = shortcut_dists / (self.node_pair_graph_dists + 1e-8)
+            valid = np.isfinite(ratios) & (self.node_pair_graph_dists > 0)
+            if valid.any():
+                q = self.config.dist_quantile
+                ratio = 1.0 / np.quantile(ratios[valid], q)
+                print(f"  Auto-scaling distances: quantile={q}, ratio={ratio:.4f}")
+                if not np.isinf(ratio) and ratio > 0:
+                    self.config.dist_scale = ratio
+            print(f"  Auto-set dist_scale={self.config.dist_scale:.4f}")
+
+        for src, tgt in self.training_data.unique_shortcuts:
+            self.node_pair_gains[src, tgt] = self.get_gain(src, tgt)
+
+        print("Updated node pair gains.")
+
+    def _update_graph_distances(self, source_node: int, target_node: int) -> None:
+        d = self.node_pair_graph_dists
+        L = self.estimate_node_distance(source_node, target_node)
+        via_xy = d[:, source_node][:, None] + L + d[target_node, :][None, :]
+        self.node_pair_graph_dists = np.minimum(d, via_xy)
+
+    # ── Pruning ───────────────────────────────────────────────────────
+
+    def prune_by_success(
+        self, success_threshold: float, max_steps: int, **kwargs: Any
     ) -> "GoalConditionedTrainingData":
-        """Prune shortcuts based on rollout length.
+        """Keep shortcuts whose rollout success rate exceeds the threshold."""
+        if self._success_counts is None:
+            raise RuntimeError("Must call train_one_round() before prune_by_success()")
 
-        Keeps only shortcuts where estimated distance < min(graph_distance, max_steps_per_rollout).
+        print("Rollout success rates for all shortcuts:")
+        pruned_pairs = []
+        for x, y in self.training_data.unique_shortcuts:
+            count = self._success_counts.get((x, y), 0)
+            prob = count / self.config.num_rollouts_per_node if self.config.num_rollouts_per_node > 0 else 0.0
+            print(f"  ({x} -> {y}): {prob:.2f} ({count}/{self.config.num_rollouts_per_node})")
+            if prob > success_threshold:
+                pruned_pairs.append((x, y))
 
-        Args:
-            **kwargs: Can override threshold with 'threshold' parameter
+        return self._build_pruned_data(pruned_pairs)
 
-        Returns:
-            Pruned training data
-        """
+    def prune(self, max_shortcuts: int | None, **kwargs: Any) -> "GoalConditionedTrainingData":
+        """Greedy gain-based pruning, identical to sac_v2."""
         if self._success_lens is None:
-            raise RuntimeError("Must call multi_train() before prune()")
+            raise RuntimeError("Must call train_one_round() before prune()")
 
-        if max_shortcuts is None:
+        print(f"\nPruning greedily to max_shortcuts={max_shortcuts}")
+
+        print("Estimated distances for all shortcuts:")
+        for x, y in self.training_data.unique_shortcuts:
+            print(f"  ({x} -> {y}): {self.estimate_node_distance(x, y):.2f}")
+
+        if max_shortcuts is None or max_shortcuts >= len(self.training_data.unique_shortcuts):
             return self.training_data
 
-        print(
-            f"\nPruning with rollouts (threshold={self.threshold}, max_shortcuts={max_shortcuts}):"
-        )
+        starts = np.array([x for x, _ in self.training_data.unique_shortcuts])
+        ends = np.array([y for _, y in self.training_data.unique_shortcuts])
 
-        # Compute success rates and select shortcuts (use unique_shortcuts for node-node pairs)
-        score_tuples = []
-        for source_id, target_id in self.training_data.unique_shortcuts:
-            p = self.estimate_probability(source_id, target_id)
-            g = self.estimate_gain(source_id, target_id)
-            score = p * g
-            score_tuples.append((source_id, target_id, score, p, g))
+        saved_gains = self.node_pair_gains.copy()
+        saved_dists = self.node_pair_graph_dists.copy()
+        prev_auto = self.config.auto_dist_scale
+        self.config.auto_dist_scale = False
 
-        # Sort score tuples first by score, and then by probability
-        score_tuples.sort(key=lambda x: (x[2], x[3]), reverse=True)
-        print("  Shortcut scores (source -> target: score (prob, gain)):")
-        for source_id, target_id, score, p, g in score_tuples:
-            print(f"    ({source_id} -> {target_id}): {score:.4f} ({p:.2f}, {g:.2f})")
+        pruned_pairs: list[tuple[int, int]] = []
+        for i in range(max_shortcuts):
+            self._update_gains()
+            gains = self.node_pair_gains[starts, ends]
+            best = int(np.argmax(gains))
+            src, tgt = int(starts[best]), int(ends[best])
+            pruned_pairs.append((src, tgt))
+            self._update_graph_distances(src, tgt)
+            starts = np.delete(starts, best)
+            ends = np.delete(ends, best)
+            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f})")
 
-        # Select top max_shortcuts shortcuts
-        selected_shortcuts = score_tuples[:max_shortcuts]
-        selected_unique_shortcuts = [
-            (source_id, target_id)
-            for source_id, target_id, _, _, _ in selected_shortcuts
+        self.config.auto_dist_scale = prev_auto
+        self.node_pair_gains = saved_gains
+        self.node_pair_graph_dists = saved_dists
+
+        return self._build_pruned_data(pruned_pairs)
+
+    def _build_pruned_data(
+        self, pruned_pairs: list[tuple[int, int]]
+    ) -> "GoalConditionedTrainingData":
+        selected_set = set(pruned_pairs)
+        selected_indices = [
+            i
+            for i, (src, tgt) in enumerate(self.training_data.valid_shortcuts)
+            if (src, tgt) in selected_set
         ]
-
-        # Filter training data to match selected unique shortcuts
-        # Keep all state-node pairs that correspond to selected node-node pairs
-        selected_set = set(selected_unique_shortcuts)
-        selected_indices = []
-
-        for i, (source_id, target_id) in enumerate(self.training_data.valid_shortcuts):
-            if (source_id, target_id) in selected_set:
-                selected_indices.append(i)
-
         print(f"  ({len(selected_indices)} state-node pairs)")
 
-        # Filter shortcut_info to match the pruned data
-        original_shortcut_info = self.training_data.config.get("shortcut_info", [])
-        pruned_shortcut_info = (
-            [original_shortcut_info[i] for i in selected_indices]
-            if original_shortcut_info
-            else []
-        )
+        original_info = self.training_data.config.get("shortcut_info", [])
+        pruned_info = [original_info[i] for i in selected_indices] if original_info else []
 
-        pruned_data = GoalConditionedTrainingData(
+        return GoalConditionedTrainingData(
             states=[self.training_data.states[i] for i in selected_indices],
-            current_atoms=[
-                self.training_data.current_atoms[i] for i in selected_indices
-            ],
+            current_atoms=[self.training_data.current_atoms[i] for i in selected_indices],
             goal_atoms=[self.training_data.goal_atoms[i] for i in selected_indices],
-            valid_shortcuts=[
-                self.training_data.valid_shortcuts[i] for i in selected_indices
-            ],
-            unique_shortcuts=selected_unique_shortcuts,  # Unique node-node pairs
-            node_states=self.training_data.node_states,  # Keep all node states
-            node_atoms=self.training_data.node_atoms,  # Keep all node atoms
-            graph=self.training_data.graph,  # Keep planning graph
+            valid_shortcuts=[self.training_data.valid_shortcuts[i] for i in selected_indices],
+            unique_shortcuts=pruned_pairs,
+            node_states=self.training_data.node_states,
+            node_atoms=self.training_data.node_atoms,
+            graph=self.training_data.graph,
             config={
                 **self.training_data.config,
-                "shortcut_info": pruned_shortcut_info,
+                "shortcut_info": pruned_info,
                 "pruning_method": "smart_rollouts",
-                "threshold": self.threshold,
-                "num_rollouts": self.num_rollouts,
+                "gain_method": self.config.gain_method,
+                "num_rollouts": self.config.num_rollouts_per_node,
             },
         )
 
-        return pruned_data
+    # ── Unsupported multi-round methods ──────────────────────────────
+
+    def update_system(self, **kwargs: Any) -> None:
+        raise NotImplementedError("SmartRolloutsHeuristic does not support multi-round training.")
 
     def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
-        """Get action to move from state toward target node.
-
-        Args:
-            obs: Current observation/state
-            target_node: Target node ID
-        Returns:
-            Action to take toward target node
-        """
-        
-        # raise an error
-        raise NotImplementedError(
-            "get_action is not implemented for SmartRolloutsHeuristic."
-        )
+        raise NotImplementedError("get_action is not implemented for SmartRolloutsHeuristic.")

@@ -5,11 +5,12 @@ eval_heuristic_only: false
 wandb_enabled: false
 
 env:
-  name: GridworldContinuousTAMPSystem
+  name: ClutteredDrawerTAMPSystem
   # Gridworld
   num_cells: 3
   num_states_per_cell: 10
   num_teleporters: 2
+  pacman: true
 
   # Blocks
   n_blocks: 2
@@ -21,6 +22,8 @@ collection:
   max_steps_per_edge: 100
   planner_id: pyperplan
   num_cost_rollouts: 100
+  load_data: false
+  training_data_path: null
 
 heuristic:
   # Heuristic Parameters
@@ -30,15 +33,23 @@ heuristic:
   max_shortcuts_per_graph: 10
 
   # Multi-train parameters
-  num_rounds: 2
+  num_rounds: 1
   success_threshold: 0.50
 
 
   # Rollout Heuristic Parameters
-  use_random_rollouts: true
-  num_rollouts_per_node: 100
-  max_steps_per_rollout: 100
-  action_scale: 1.0
+  rollouts:
+    use_random_rollouts: true
+    num_rollouts_per_node: 100
+    max_steps_per_rollout: 100
+    max_episode_steps: 100
+    action_scale: 1.0
+    success_threshold: 0.10
+    gain_method: exact
+    auto_dist_scale: true
+    dist_scale: 1.0
+    dist_quantile: 0.9
+
 
   
 
@@ -101,6 +112,8 @@ heuristic:
     num_epochs_per_round: 5
     max_episode_steps: 100
     learn_frequency: 1
+    gain_update_frequency: 10
+    medoid_update_frequency: 10
     iters_per_epoch: 5
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -117,6 +130,8 @@ heuristic:
     auto_dist_scale: true
     residualize: true
     max_atom_size: 50
+
+    num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
 
 policy:

@@ -163,7 +163,9 @@ def run_evaluation_episode(
     episode_num: int = 0,
 ) -> tuple[float, int, bool, dict[str, Any]]:
     """Run single evaluation episode."""
+    print(f"[DBG] run_eval_ep entry ep={episode_num}")
     render_mode = getattr(system.env, "render_mode", None)
+    print(f"[DBG] run_eval_ep render_mode={render_mode}")
     can_render = render_mode is not None
     if config.render and can_render:
         video_folder = Path(f"videos/{system.name}_{policy_name}_eval")
@@ -179,8 +181,11 @@ def run_evaluation_episode(
             disable_logger=True,
         )
 
+    print("[DBG] run_eval_ep: about to system.reset()")
     obs, info = system.reset()
+    print("[DBG] run_eval_ep: system.reset() done")
     step_result = approach.reset(obs, info)
+    print("[DBG] run_eval_ep: approach.reset() done")
 
     trajectory_positions: list[list[float]] = [_flatten_obs(obs)]
 
@@ -250,7 +255,7 @@ def run_evaluation_episode(
     total_reward += float(reward)
     step_count += 1
     if step_result.terminate or terminated or truncated:
-        success = step_result.terminate or terminated
+        success = terminated or (step_result.terminate and not step_result.info.get("skill_failed", False))
         if config.render and can_render:
             cast(Any, system.env).close()
             system.env = recording_env
@@ -268,7 +273,7 @@ def run_evaluation_episode(
         total_reward += float(reward)
         step_count += 1
         if step_result.terminate or terminated or truncated:
-            success = step_result.terminate or terminated
+            success = terminated or (step_result.terminate and not step_result.info.get("skill_failed", False))
             break
 
     if config.render and can_render:
@@ -370,14 +375,6 @@ def run_evaluation_episode_with_caching(
         episode_info["reward"] = total_reward
         return total_reward, step_count, success, episode_info
 
-    if config.fast_eval and not (config.render and can_render):
-        step_count = approach.best_eval_total_steps
-        success = bool(approach.best_eval_path)
-        episode_info["success"] = success
-        episode_info["true_steps"] = step_count
-        episode_info["reward"] = total_reward
-        return total_reward, step_count, success, episode_info
-
     best_edges = approach.current_path
     if not best_edges:
         episode_info["success"] = success
@@ -400,7 +397,7 @@ def run_evaluation_episode_with_caching(
     total_reward += float(reward)
     step_count += 1
     if step_result.terminate or terminated or truncated:
-        success = step_result.terminate or terminated
+        success = (step_result.terminate and not step_result.info.get("skill_failed", False)) or terminated
         if config.render and can_render:
             cast(Any, system.env).close()
             system.env = recording_env
@@ -438,7 +435,7 @@ def run_evaluation_episode_with_caching(
                 step_count += 1
                 done = bool(step_result.terminate or terminated or truncated)
                 if step_result.terminate or terminated or truncated:
-                    success = step_result.terminate or terminated
+                    success = (step_result.terminate and not step_result.info.get("skill_failed", False)) or terminated
                     break
         if done:
             break
@@ -452,14 +449,17 @@ def run_evaluation_episode_with_caching(
             total_reward += float(reward)
             step_count += 1
             if step_result.terminate or terminated or truncated:
-                success = step_result.terminate or terminated
+                success = (step_result.terminate and not step_result.info.get("skill_failed", False)) or terminated
                 break
 
     if config.render and can_render:
         cast(Any, system.env).close()
         system.env = recording_env
 
-    return total_reward, step_count, success
+    episode_info["success"] = success
+    episode_info["true_steps"] = step_count
+    episode_info["reward"] = total_reward
+    return total_reward, step_count, success, episode_info
 
 
 def train_and_evaluate(

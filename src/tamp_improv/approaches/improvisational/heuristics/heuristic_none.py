@@ -1,9 +1,7 @@
-"""Rollout-based heuristic for shortcut evaluation."""
+"""Pass-through heuristic that performs no training."""
 
-from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 
-import gymnasium as gym
 import numpy as np
 
 from tamp_improv.approaches.improvisational.heuristics.base import (
@@ -20,36 +18,17 @@ if TYPE_CHECKING:
 
 
 class NoneHeuristic(BaseHeuristic):
-    """Rollout-based heuristic for evaluating shortcuts.
-
-    This heuristic performs random rollouts from source nodes to
-    evaluate which target nodes are reachable. The rollouts are executed
-    during multi_train(), and the results (success counts) are cached
-    for use in estimate_node_distance() and prune().
-
-    The success rate (0-1) indicates how often a target node is reached
-    within the rollout horizon.
-    """
+    """Pass-through heuristic that does no training and keeps all shortcuts."""
 
     def __init__(
         self,
         training_data: "GoalConditionedTrainingData",
         graph_distances: dict[tuple[int, int], float],
+        system: "ImprovisationalTAMPSystem",
         rng: np.random.Generator,
     ):
-        """Initialize rollouts heuristic.
-
-        Args:
-            training_data: Full training data from collect_total_shortcuts
-            graph_distances: Dict mapping (source_node, target_node) -> graph distance
-            system: TAMP system for executing rollouts
-            num_rollouts: Number of rollouts per source node
-            max_steps_per_rollout: Maximum steps per rollout
-            threshold: Success rate threshold for pruning (0-1)
-            action_scale: Scale factor for action sampling
-            seed: Random seed for action sampling
-        """
         super().__init__(training_data, graph_distances)
+        self.system = system
         self.training_data = training_data
         self.graph_distances = graph_distances
         self.rng = rng
@@ -121,17 +100,16 @@ class NoneHeuristic(BaseHeuristic):
 
         return pruned_training_data
 
-    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
-        """Get action to move from state toward target node.
+    def train_one_round(self) -> dict[str, Any]:
+        return self.multi_train()
 
-        Args:
-            obs: Current observation/state
-            target_node: Target node ID
-        Returns:
-            Action to take toward target node
-        """
-        
-        # raise an error
-        raise NotImplementedError(
-            "get_action is not implemented for NoneHeuristic."
-        )
+    def prune_by_success(
+        self, success_threshold: float, max_steps: int, **kwargs: Any
+    ) -> "GoalConditionedTrainingData":
+        raise NotImplementedError("NoneHeuristic does not support multi-round pruning.")
+
+    def update_system(self, **kwargs: Any) -> None:
+        raise NotImplementedError("NoneHeuristic does not support update_system.")
+
+    def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
+        raise NotImplementedError("get_action is not implemented for NoneHeuristic.")

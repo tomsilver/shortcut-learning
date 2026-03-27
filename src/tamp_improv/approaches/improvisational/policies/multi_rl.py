@@ -328,6 +328,8 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         wrapper."""
         if hasattr(env, "configure_training"):
             env.configure_training(training_data)
+        if hasattr(env, "max_episode_steps"):
+            env.max_episode_steps = self.config.max_episode_steps
         if hasattr(env, "env"):
             self._configure_env_recursively(env.env, training_data)
 
@@ -411,9 +413,9 @@ def train_single_policy(
     if save_dir:
         checkpoint_dir = str(Path(save_dir) / "checkpoints")
     callback = TrainingProgressCallback(
-        check_freq=train_data.config["training_record_interval"],
-        early_stopping=train_data.config["early_stopping"],
-        early_stopping_patience=train_data.config["early_stopping_patience"],
+        check_freq=policy.config.training_record_interval,
+        early_stopping=policy.config.early_stopping,
+        early_stopping_patience=policy.config.early_stopping_patience,
         early_stopping_threshold=0.8,
         policy_key=policy_key,
         save_checkpoints=True,

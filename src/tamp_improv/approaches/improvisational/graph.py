@@ -135,7 +135,8 @@ class PlanningGraph:
 
         initial_node = self.node_map[frozenset(init_atoms)]
         goal_nodes = [node for node in self.nodes if goal.issubset(node.atoms)]
-        assert goal_nodes, "No goal node found"
+        if not goal_nodes:
+            return []
 
         # Modified Dijkstra's algorithm that considers the path taken
         distances: dict[tuple[PlanningGraphNode, tuple[int, ...]], float] = {}
@@ -212,7 +213,8 @@ class PlanningGraph:
                 goal_states, key=lambda s: distances.get(s, float("inf"))
             )
 
-        assert best_goal_states, "No goal state found"
+        if not best_goal_states:
+            return []
         best_goal_state = min(
             best_goal_states.values(),
             key=lambda s: distances.get(s, float("inf")),

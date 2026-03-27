@@ -308,9 +308,11 @@ class ContinuousActor(nn.Module):
 
 
 class ResidualContinuousActor(nn.Module):
-    """Residual actor: output = base_action + pi_1(base_action) + pi_2(state, goal).
+    """Residual actor: output = base_action + pi(state, goal, base_action).
 
-    pi_1 is zero-initialized so training starts at the pure base-skill policy.
+    pi fuses a state-goal branch (MLP) with a base-action branch (MLP), concatenates
+    both, passes through a combine layer, then outputs a tanh-squashed residual.
+    The total action is base_action + residual where residual ∈ (-1, 1).
     """
 
     def __init__(
@@ -332,29 +334,45 @@ class ResidualContinuousActor(nn.Module):
         if hidden_dims is None:
             hidden_dims = [64, 64]
 
-        # pi_1: zero-initialized linear on base_action
-        self.pi1 = nn.Linear(action_dim, action_dim)
-        nn.init.zeros_(self.pi1.weight)
-        nn.init.zeros_(self.pi1.bias)
+        branch_dim = hidden_dims[-1]
 
-        # pi_2: standard squashed-Gaussian trunk
-        layers = []
-        prev_dim = state_dim + atom_dim
-        for h in hidden_dims:
-            layers.append(nn.Linear(prev_dim, h))
-            layers.append(nn.ReLU())
-            prev_dim = h
-        self.trunk = nn.Sequential(*layers)
-        self.mean_head = nn.Linear(prev_dim, action_dim)
-        self.log_std_head = nn.Linear(prev_dim, action_dim)
+        # Branch 1: (state, goal) → branch_dim
+        self.sg_trunk = MLP(state_dim + atom_dim, branch_dim, hidden_dims[:-1])
+
+        # Branch 2: base_action → branch_dim // 2
+        self.base_trunk = nn.Sequential(
+            nn.Linear(action_dim, branch_dim // 2),
+            nn.ReLU(),
+        )
+
+        # Combine branches and produce residual mean/log_std
+        combined_dim = branch_dim + branch_dim // 2
+        self.combine = nn.Sequential(
+            nn.Linear(combined_dim, branch_dim),
+            nn.ReLU(),
+        )
+        self.mean_head = nn.Linear(branch_dim, action_dim)
+        self.log_std_head = nn.Linear(branch_dim, action_dim)
+
+    def _compute_params(
+        self,
+        states: torch.Tensor,
+        goal_atom_vectors: torch.Tensor,
+        base_actions: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        sg_features = self.sg_trunk(torch.cat([states, goal_atom_vectors], dim=-1))
+        base_features = self.base_trunk(base_actions)
+        combined = self.combine(torch.cat([sg_features, base_features], dim=-1))
+        mean = self.mean_head(combined)
+        log_std = torch.clamp(self.log_std_head(combined), self.log_std_min, self.log_std_max)
+        return mean, log_std
 
     def forward(
         self, states: torch.Tensor, goal_atom_vectors: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        features = self.trunk(torch.cat([states, goal_atom_vectors], dim=-1))
-        mean = self.mean_head(features)
-        log_std = torch.clamp(self.log_std_head(features), self.log_std_min, self.log_std_max)
-        return mean, log_std
+        """Returns (mean, log_std) with zero base_actions, for diagnostics/compatibility."""
+        base_actions = torch.zeros(states.shape[0], self.action_dim, device=states.device)
+        return self._compute_params(states, goal_atom_vectors, base_actions)
 
     def sample(
         self,
@@ -366,17 +384,18 @@ class ResidualContinuousActor(nn.Module):
         if base_actions is None:
             base_actions = torch.zeros(states.shape[0], self.action_dim, device=states.device)
 
-        pi1_correction = self.pi1(base_actions)
-        mean, log_std = self.forward(states, goal_atom_vectors)
+        mean, log_std = self._compute_params(states, goal_atom_vectors, base_actions)
 
         if deterministic:
-            return base_actions + pi1_correction + torch.tanh(mean), None
+            # return base_actions + torch.tanh(mean), None
+            return torch.tanh(mean), None
 
         std = log_std.exp()
         x_t = torch.distributions.Normal(mean, std).rsample()
-        pi2_action = torch.tanh(x_t)
-        action = base_actions + pi1_correction + pi2_action
+        residual = torch.tanh(x_t)
+        # action = base_actions + residual
+        action = residual
 
         log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
-        log_prob -= torch.log(1 - pi2_action.pow(2) + 1e-6)
+        log_prob -= torch.log(1 - residual.pow(2) + 1e-6)
         return action, log_prob.sum(dim=-1)

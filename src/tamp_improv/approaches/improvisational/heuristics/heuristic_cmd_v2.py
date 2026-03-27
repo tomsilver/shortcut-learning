@@ -104,6 +104,8 @@ class CMDV2HeuristicConfig:
     # Training
     iters_per_epoch: int = 1  # Gradient steps per training call
     learn_frequency: int = 10  # Learn every N epochs
+    gain_update_frequency: int = 10  # Update UCB gains every N epochs
+    medoid_update_frequency: int = 10  # Re-elect node medoids every N epochs
     num_rounds: int = 5
     num_epochs_per_round: int = 200
     trajectories_per_epoch: int = 10
@@ -271,6 +273,7 @@ class CMDv2Heuristic(BaseHeuristic):
         self.system = system
         self.rng = rng
         self.first_edge_dict = first_edge_dict
+        self.internal_graph = training_data.graph  # Keep an internal copy of the graph for edge lookups (updated in multi-round training)
 
         # Initialize config
         if config is None:
@@ -321,9 +324,16 @@ class CMDv2Heuristic(BaseHeuristic):
         for (i, j), dist in graph_distances.items():
             self.original_node_pair_graph_dists[i, j] = dist
             self.node_pair_graph_dists[i, j] = dist
+        
+        print("Node pair graph dists", self.node_pair_graph_dists)
+
+        self.valid_pairs = list(training_data.unique_shortcuts)
+        self.valid_pairs_mask = np.zeros((self.num_nodes, self.num_nodes), dtype=bool)
+        for (i, j) in self.valid_pairs:
+            self.valid_pairs_mask[i, j] = True
 
         self.node_pair_successes = {}
-        for (i, j) in graph_distances.keys():
+        for (i, j) in self.valid_pairs:
             # Buffer of size k for each node pair to track recent success/failure outcomes
             k = self.config.num_reliability_trials
             if k > 0:
@@ -357,6 +367,13 @@ class CMDv2Heuristic(BaseHeuristic):
 
         # Training statistics
         self.training_step = 0
+
+        # Node medoids: cached representative state per node
+        self._node_medoids: dict[int, Any] = {
+            node_id: states[0]
+            for node_id, states in training_data.node_states.items()
+            if states
+        }
 
         # Pre-compute node atoms for fast lookup
         self._node_atoms_dict = dict(training_data.node_atoms)
@@ -433,6 +450,7 @@ class CMDv2Heuristic(BaseHeuristic):
             print(f"  Node {i} -> Node {j}: {old_dist} -> {dist}")
 
         self.system = new_system
+        self.internal_graph = new_graph
         # self.training_data.graph = new_graph
         self.graph_distances = new_graph_distances
         self.node_pair_graph_dists = np.zeros((self.num_nodes, self.num_nodes))
@@ -520,40 +538,6 @@ class CMDv2Heuristic(BaseHeuristic):
         self.c_net = CostNet(g_dim=self.config.latent_dim).to(device)
 
 
-
-    # def multi_train(self, **kwargs: Any) -> dict[str, Any]:
-    #     """Train critic and actor jointly using contrastive learning.
-
-    #     Returns:
-    #         Dictionary with training statistics
-    #     """
-    #     print(f"\n{'='*80}")
-    #     print(f"Training CMD V2 Heuristic (SAC-based)")
-    #     print(f"{'='*80}")
-    #     print(f"State dim: {self.state_dim}")
-    #     print(f"Action space: {self.action_space_type}")
-    #     print(f"Action dim: {self.action_dim}")
-    #     print(f"Num nodes: {self.num_nodes}")
-    #     print(f"Latent dim: {self.config.latent_dim}")
-    #     print(f"Critic LR: {self.config.critic_lr}")
-    #     print(f"Actor LR: {self.config.actor_lr}")
-    #     print(f"Batch size: {self.config.batch_size}")
-    #     print(f"Device: {self.config.device}")
-    #     print(f"{'='*80}\n")
-
-    #     training_history = {
-    #         "critic_losses": [],
-    #         "actor_losses": [],
-    #         "rounds": [],
-    #     }
-
-    #     round_history = self._train_one_round()
-    #     training_history["rounds"].append(round_history)
-    #     training_history["critic_losses"].extend(round_history["critic_losses"])
-    #     training_history["actor_losses"].extend(round_history["actor_losses"])
-
-    #     return training_history
-
     def train_one_round(self) -> dict[str, Any]:
         """Train for one round (multiple epochs with rollouts).
 
@@ -562,15 +546,24 @@ class CMDv2Heuristic(BaseHeuristic):
         """
         self.total_samples = 0
         self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
+        self.node_pair_successes = {}
+        for (i, j) in self.valid_pairs:
+            k = self.config.num_reliability_trials
+            if k > 0:
+                self.node_pair_successes[(i, j)] = deque(maxlen=k)
+            else:
+                self.node_pair_successes[(i, j)] = []
         
         critic_losses = []
         actor_losses = []
 
+        self._update_medoids()
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
             # Collect trajectories
-            for _ in range(self.config.trajectories_per_epoch):
+            for i in range(self.config.trajectories_per_epoch):
+                print("Trajectory collection: Epoch", epoch + 1, "Trajectory", i + 1)
                 trajectory = self._collect_trajectory()
                 self.replay_buffer.add_trajectory(trajectory)
 
@@ -581,9 +574,12 @@ class CMDv2Heuristic(BaseHeuristic):
                         critic_loss, actor_loss = self._update_networks()
                         critic_losses.append(critic_loss)
                         actor_losses.append(actor_loss)
-                
-                if self.config.sampling_method != "uniform":
-                    self._update_gains()
+
+            if (epoch + 1) % self.config.medoid_update_frequency == 0:
+                self._update_medoids()
+
+            if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
+                self._update_gains()
 
             # Print progress
             if (epoch + 1) % 10 == 0 or epoch == 0:
@@ -596,6 +592,7 @@ class CMDv2Heuristic(BaseHeuristic):
                     f"Actor loss: {actor_loss_str}"
                 )
         
+        self._update_medoids()
         self._update_gains()
 
         return {
@@ -633,26 +630,24 @@ class CMDv2Heuristic(BaseHeuristic):
         node_ids = list(self.training_data.node_states.keys())
 
         if self.config.sampling_method == "uniform":
-            source_id = self.rng.choice(node_ids)
-            target_id = self.rng.choice(node_ids)
+            idx = self.rng.integers(len(self.valid_pairs))
+            source_id, target_id = self.valid_pairs[idx]
 
         elif self.config.sampling_method == "ucb":
             gains = self.node_pair_gains
-            ucbs = np.sqrt(2 * np.log(self.total_samples+1) / (self.node_pair_samples+ 1e-8))
-            weights = gains + self.config.ucb_beta * ucbs
-            
-            # choose the node pair with maximum weight
-            flat_index = np.argmax(weights)
+            ucbs = np.sqrt(2 * np.log(max(self.total_samples, 1)) / (self.node_pair_samples + 1e-8))
+            weights = np.where(self.valid_pairs_mask, gains + self.config.ucb_beta * ucbs, -np.inf)
+            flat_index = int(np.argmax(weights))
             source_id = flat_index // self.num_nodes
             target_id = flat_index % self.num_nodes
-        
+
         elif self.config.sampling_method == "stochastic_ucb":
             gains = self.node_pair_gains
-            ucbs = np.sqrt(2 * np.log(self.total_samples+1) / (self.node_pair_samples+ 1e-8))
+            ucbs = np.sqrt(2 * np.log(max(self.total_samples, 1)) / (self.node_pair_samples + 1e-8))
             weights = gains + self.config.ucb_beta * ucbs
-            
-            # softmax over weights to get probabilities
+            weights = np.where(self.valid_pairs_mask, weights, -np.inf)
             exp_weights = np.exp(weights - np.max(weights))
+            exp_weights = np.where(self.valid_pairs_mask, exp_weights, 0.0)
             probabilities = exp_weights / np.sum(exp_weights)
             flat_index = self.rng.choice(self.num_nodes * self.num_nodes, p=probabilities.flatten())
             source_id = flat_index // self.num_nodes
@@ -666,8 +661,8 @@ class CMDv2Heuristic(BaseHeuristic):
         self.total_samples += 1
 
 
-        source_id = self.rng.choice(node_ids)
-        target_id = self.rng.choice(node_ids)
+        # source_id = self.rng.choice(node_ids)
+        # target_id = self.rng.choice(node_ids)
 
         # Sample random source state
         source_states = self.training_data.node_states[source_id]
@@ -705,6 +700,8 @@ class CMDv2Heuristic(BaseHeuristic):
             # Execute action
             current_state, _, terminated, truncated, _ = env.step(action)
 
+            # print("Step", step + 1, "Current state:", current_state, "Current node:", current_node_id, "Target node:", target_id)
+
             if terminated or truncated:
                 break
         
@@ -741,7 +738,12 @@ class CMDv2Heuristic(BaseHeuristic):
             if skills:
                 skill = skills[0]
                 skill.reset(operator)
-                return np.array(skill.get_action(obs), dtype=np.float32)
+                try:
+                    action = skill.get_action(obs)
+                except Exception:
+                    action = None
+                if action is not None:
+                    return np.array(action, dtype=np.float32)
 
         return np.zeros(self.action_dim, dtype=np.float32)
 
@@ -784,7 +786,12 @@ class CMDv2Heuristic(BaseHeuristic):
                 continue
             skill = skills[0]
             skill.reset(operator)
-            base_actions[i] = np.array(skill.get_action(obs_list[i]), dtype=np.float32)
+            try:
+                action = skill.get_action(obs_list[i])
+            except Exception:
+                action = None
+            if action is not None:
+                base_actions[i] = np.array(action, dtype=np.float32)
 
         return base_actions
 
@@ -1072,15 +1079,10 @@ class CMDv2Heuristic(BaseHeuristic):
         Returns:
             Estimated distance
         """
-        source_states = self.training_data.node_states[source_node]
-
-        d_sg = 0
-        n = 0
-        for source_state in random.sample(source_states, min(100, len(source_states))):
-            d_sg += (self.latent_dist(source_state, target_node))
-            n += 1
-        d_sg /= n
-
+        source_medoid = self._node_medoids.get(source_node)
+        if source_medoid is None:
+            return float("inf")
+        d_sg = self.latent_dist(source_medoid, target_node)
         return self.config.dist_scale * max(0, -(1 / (np.log(self.config.gamma))) * d_sg)
 
     def prune_by_success(self, success_threshold: float, max_steps: int) -> GoalConditionedTrainingData:
@@ -1102,12 +1104,6 @@ class CMDv2Heuristic(BaseHeuristic):
             else:
                 prob = np.mean(successes) if successes else 0.0
 
-            
-            # d = self.estimate_node_distance(x, y)
-            # if d / max_steps < success_threshold:
-            #     prob = 1.0
-            # else:
-            #     prob = 0.0
             print(f"  ({x} -> {y}) success prob: {prob:.2f})")
 
             if prob > success_threshold:
@@ -1174,7 +1170,7 @@ class CMDv2Heuristic(BaseHeuristic):
         ends = np.array([y for (_, y) in self.training_data.unique_shortcuts])
         
         curr_gains = self.node_pair_gains.copy()
-        curr_dists = self.node_pair_graph_dists.copy()
+        curr_dists = self.original_node_pair_graph_dists.copy()
 
         pruned_pairs = []
 
@@ -1200,8 +1196,8 @@ class CMDv2Heuristic(BaseHeuristic):
             print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} with gain {gains[max_idx]:.2f}")
         
         self.config.auto_dist_scale = True
-        self.node_pair_gains = curr_gains
-        self.node_pair_graph_dists = curr_dists
+        # self.node_pair_gains = curr_gains
+        # self.node_pair_graph_dists = curr_dists
         
         # Keep all state-node pairs that correspond to selected node-node pairs
         selected_set = set(pruned_pairs)
@@ -1320,14 +1316,26 @@ class CMDv2Heuristic(BaseHeuristic):
             raise ValueError(f"Unknown gain method: {self.config.gain_method}")
 
 
+    def _update_medoids(self) -> None:
+        """Re-elect the medoid (most self-representative state) for each node."""
+        print("Updating node medoids...")
+        for node_id, states in self.training_data.node_states.items():
+            if not states:
+                continue
+            best_state = min(states, key=lambda s: self.latent_dist(s, node_id))
+            self._node_medoids[node_id] = best_state
+        print("Node medoids updated.")
+
     def _update_gains(self) -> None:
         """Update gain estimates for all node pairs based on current networks."""
         print("\nUpdating node pair gains...")        
         
         if self.config.auto_dist_scale:
+            print("  Auto-scaling dist_scale based on current latent distance estimates...")
             self.config.dist_scale = 1.0  # Reset to 1.0 before auto-scaling
             shortcut_dists = np.zeros((self.num_nodes, self.num_nodes))
             for source_id, target_id in self.training_data.unique_shortcuts:
+                print("    Estimating distance for shortcut:", source_id, target_id)
                 dist = self.estimate_node_distance(source_id, target_id)
                 shortcut_dists[source_id, target_id] = dist
             
@@ -1343,6 +1351,7 @@ class CMDv2Heuristic(BaseHeuristic):
         print("Tracking a distance:", self.estimate_node_distance(0, 1))
 
         for source_id, target_id in self.training_data.unique_shortcuts:
+            print("  Updating gain for node pair:", source_id, target_id)
             gain = self.get_gain(source_id, target_id)
             self.node_pair_gains[source_id, target_id] = gain
 
@@ -1377,7 +1386,7 @@ class CMDv2Heuristic(BaseHeuristic):
         
         gain = self.node_pair_gains[source_node, target_node]
 
-        ucb = np.sqrt(2 * np.log(self.total_samples+1) / (self.node_pair_samples[source_node, target_node] + 1e-8))
+        ucb = np.sqrt(2 * np.log(max(self.total_samples, 1)) / (self.node_pair_samples[source_node, target_node] + 1e-8))
         return gain + self.config.ucb_beta * ucb
     
 
