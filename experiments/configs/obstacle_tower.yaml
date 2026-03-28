@@ -34,13 +34,14 @@ heuristic:
 
   # Multi-train parameters
   num_rounds: 1
+  continuous_graduation: false
   success_threshold: 0.90
 
 
-  # Rollout Heuristic Parameters, 345 nodes, R = 345 * 20 = 6900
+  # Rollout Heuristic Parameters, 345 nodes, R = 345 * 100 = 34500
   rollouts:
     use_random_rollouts: true
-    num_rollouts_per_node: 20
+    num_rollouts_per_node: 100
     max_steps_per_rollout: 500
     max_episode_steps: 500
     action_scale: 0.015
@@ -63,10 +64,11 @@ heuristic:
     policy_temperature: 0.3
     iters_per_epoch: 10
     learn_frequency: 1
-    gain_update_frequency: 10
+    gain_update_frequency: 100
+    medoid_update_frequency: 100
     node_distance_samples: 5
 
-    num_epochs_per_round: 690  # Epochs per round (used as num_epochs_per_round in multi_train)
+    num_epochs_per_round: 3450  # Epochs per round (used as num_epochs_per_round in multi_train)
     trajectories_per_epoch: 10
     max_episode_steps: 500
 
@@ -104,11 +106,11 @@ heuristic:
     her_n_sampled_goal: 4
     her_strategy: future
     trajectories_per_epoch: 10
-    num_epochs_per_round: 690
+    num_epochs_per_round: 3450
     max_episode_steps: 500
     learn_frequency: 1
-    gain_update_frequency: 10
-    medoid_update_frequency: 10
+    gain_update_frequency: 100
+    medoid_update_frequency: 100
     iters_per_epoch: 100
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -119,6 +121,8 @@ heuristic:
     beta: 1.0
     sampling_method: uniform
     ucb_beta: 1.0
+    num_bins: 101
+    max_bin: 1400
     gain_method: exact
     dist_scale: 1.0
     dist_quantile: 0.9
@@ -129,7 +133,7 @@ heuristic:
     num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
 
-# M = 100 * 10 * 10 = 10000
+# M = 800 * 10 * 10 = 80000
 policy:
   use_multi_rl: false
 
@@ -140,10 +144,10 @@ policy:
   gamma: 0.99
   ent_coef: 0.01
   deterministic: true
-  early_stopping: false
+  early_stopping: true
   early_stopping_patience: 10
   max_episode_steps: 500
-  episodes_per_scenario: 100
+  episodes_per_scenario: 800
   training_record_interval: 100
 
   eval_rollouts: 10
@@ -152,7 +156,7 @@ policy:
 evaluation:
   render: false
   fast_eval: false
-  num_episodes: 5
+  num_episodes: 10
   max_episode_steps: 500
 
 

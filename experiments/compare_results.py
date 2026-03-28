@@ -338,15 +338,21 @@ def main() -> None:
     # Resolve baseline
     baseline_value = None
     if args.baseline is not None:
-        baseline_dir = find_latest_run(args.baseline, args.outputs_dir)
-        if baseline_dir is None:
-            print(f"ERROR: baseline '{args.baseline}' not found", file=sys.stderr)
-            sys.exit(1)
-        baseline_results = parse_results(baseline_dir / "results.txt")
-        if "avg_steps" not in baseline_results:
-            print("ERROR: baseline has no avg_steps", file=sys.stderr)
-            sys.exit(1)
-        baseline_value = float(baseline_results["avg_steps"])
+        # Try multi-seed aggregation first, then fall back to single run
+        baseline_agg = aggregate_seeds(args.baseline, args.outputs_dir, args.metric)
+        if baseline_agg is not None:
+            baseline_value, _, _, _ = baseline_agg
+            print(f"baseline '{args.baseline}': mean={baseline_value:.2f} (from seeds)")
+        else:
+            baseline_dir = find_latest_run(args.baseline, args.outputs_dir)
+            if baseline_dir is None:
+                print(f"ERROR: baseline '{args.baseline}' not found", file=sys.stderr)
+                sys.exit(1)
+            baseline_results = parse_results(baseline_dir / "results.txt")
+            if args.metric not in baseline_results:
+                print(f"ERROR: baseline has no {args.metric}", file=sys.stderr)
+                sys.exit(1)
+            baseline_value = float(baseline_results[args.metric])
 
     plot_values = values
     plot_stds = stds

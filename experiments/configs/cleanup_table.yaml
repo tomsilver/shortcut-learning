@@ -35,13 +35,14 @@ heuristic:
 
   # Multi-train parameters
   num_rounds: 1
+  continuous_graduation: false
   success_threshold: 0.90
 
 
-  # Rollout Heuristic Parameters, R = 10 * 144 = 1440
+  # Rollout Heuristic Parameters, R = 50 * 144 = 7200
   rollouts:
     use_random_rollouts: true
-    num_rollouts_per_node: 10
+    num_rollouts_per_node: 50
     max_steps_per_rollout: 600
     max_episode_steps: 600
     action_scale: 0.005
@@ -64,10 +65,11 @@ heuristic:
     policy_temperature: 0.3
     iters_per_epoch: 10
     learn_frequency: 1
-    gain_update_frequency: 10
+    gain_update_frequency: 100
+    medoid_update_frequency: 100
     node_distance_samples: 5
 
-    num_epochs_per_round: 150  # Epochs per round (used as num_epochs_per_round in multi_train)
+    num_epochs_per_round: 720  # Epochs per round (used as num_epochs_per_round in multi_train)
     trajectories_per_epoch: 10
     max_episode_steps: 600
 
@@ -105,11 +107,11 @@ heuristic:
     her_n_sampled_goal: 4
     her_strategy: future
     trajectories_per_epoch: 10
-    num_epochs_per_round: 150
+    num_epochs_per_round: 720
     max_episode_steps: 600
     learn_frequency: 1
-    gain_update_frequency: 10
-    medoid_update_frequency: 10
+    gain_update_frequency: 100
+    medoid_update_frequency: 100
     iters_per_epoch: 100
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -120,6 +122,8 @@ heuristic:
     beta: 1.0
     sampling_method: uniform
     ucb_beta: 1.0
+    num_bins: 101
+    max_bin: 3000
     gain_method: exact
     dist_scale: 1.0
     dist_quantile: 0.9
@@ -140,11 +144,11 @@ policy:
   n_epochs: 10
   gamma: 0.99
   ent_coef: 0.01
-  deterministic: true
-  early_stopping: false
+  deterministic: false
+  early_stopping: true
   early_stopping_patience: 10
   max_episode_steps: 600
-  episodes_per_scenario: 10
+  episodes_per_scenario: 100
   training_record_interval: 100
 
   eval_rollouts: 10
@@ -153,7 +157,7 @@ policy:
 evaluation:
   render: false
   fast_eval: false
-  num_episodes: 5
+  num_episodes: 10
   max_episode_steps: 600
 
 

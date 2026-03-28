@@ -16,6 +16,7 @@ Key components:
 Based on Eysenbach et al. "Contrastive Learning as Goal-Conditioned RL" (2021)
 """
 
+import copy
 import math
 import os
 import pickle
@@ -52,6 +53,7 @@ from tamp_improv.approaches.improvisational.graph import (
     PlanningGraphEdge,
     PlanningGraphNode,
 )
+from tamp_improv.approaches.improvisational.graph_training import compute_first_edge
 
 if TYPE_CHECKING:
     from tamp_improv.approaches.improvisational.policies.base import ObsType
@@ -108,6 +110,7 @@ class CMDV2HeuristicConfig:
     medoid_update_frequency: int = 10  # Re-elect node medoids every N epochs
     num_rounds: int = 5
     num_epochs_per_round: int = 200
+    continuous_graduation: bool = False  # If True, graduate pairs online instead of between rounds
     trajectories_per_epoch: int = 10
     max_episode_steps: int = 100
     keep_fraction: float = 0.5
@@ -274,6 +277,7 @@ class CMDv2Heuristic(BaseHeuristic):
         self.rng = rng
         self.first_edge_dict = first_edge_dict
         self.internal_graph = training_data.graph  # Keep an internal copy of the graph for edge lookups (updated in multi-round training)
+        self.virtual_system = copy.deepcopy(system)  # Virtual system for continuous graduation
 
         # Initialize config
         if config is None:
@@ -563,8 +567,7 @@ class CMDv2Heuristic(BaseHeuristic):
         for epoch in range(self.config.num_epochs_per_round):
             # Collect trajectories
             for i in range(self.config.trajectories_per_epoch):
-                print("Trajectory collection: Epoch", epoch + 1, "Trajectory", i + 1)
-                trajectory = self._collect_trajectory()
+                trajectory, _, _ = self._collect_trajectory()
                 self.replay_buffer.add_trajectory(trajectory)
 
             # Update networks
@@ -602,6 +605,87 @@ class CMDv2Heuristic(BaseHeuristic):
         }
     
 
+    def train_continuous(
+        self,
+        graduate_fn: Any = None,
+    ) -> dict[str, Any]:
+        """Train with continuous graduation: graduate pairs online as they become reliable.
+
+        Instead of stopping between rounds to add edges, this method graduates a pair
+        immediately when its sliding-window success rate crosses the threshold. The
+        graduation callback (provided by the pipeline) handles operator/skill creation
+        and adds the edge to internal_graph; this method then updates graph distances,
+        first_edge_dict, and gains in-place.
+
+        Args:
+            graduate_fn: Callable(heuristic, source_id, target_id) invoked on each
+                graduation. Responsible for adding the operator+skill to virtual_system
+                and the corresponding edge to internal_graph. If None, only the
+                distance/gain updates are performed (useful for testing).
+
+        Returns:
+            Dictionary with training statistics.
+        """
+        self.total_samples = 0
+        self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
+        # Do NOT reset node_pair_successes — the sliding window persists across epochs.
+
+        critic_losses: list[float] = []
+        actor_losses: list[float] = []
+
+        self._update_medoids()
+        self._update_gains()
+
+        for epoch in range(self.config.num_epochs_per_round):
+            for i in range(self.config.trajectories_per_epoch):
+                trajectory, source_id, target_id = self._collect_trajectory()
+                self.replay_buffer.add_trajectory(trajectory)
+
+                # Check if this pair just crossed the graduation threshold
+                successes = self.node_pair_successes.get((source_id, target_id), [])
+                k = self.config.num_reliability_trials
+                if k > 0 and len(successes) >= k and np.mean(successes) > self.config.threshold:
+                    print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
+                    if graduate_fn is not None:
+                        graduate_fn(self, source_id, target_id)
+                    self._update_graph_distances(source_id, target_id)
+                    self._update_first_edge_dict(source_id, target_id)
+                    self._update_gains()
+                    # Clear success record so the pair must re-earn graduation before re-adding
+                    self.node_pair_successes[(source_id, target_id)].clear()
+
+            if (epoch + 1) % self.config.learn_frequency == 0:
+                if len(self.replay_buffer) >= self.config.batch_size:
+                    for _ in range(self.config.iters_per_epoch):
+                        critic_loss, actor_loss = self._update_networks()
+                        critic_losses.append(critic_loss)
+                        actor_losses.append(actor_loss)
+
+            if (epoch + 1) % self.config.medoid_update_frequency == 0:
+                self._update_medoids()
+
+            if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
+                self._update_gains()
+
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                critic_loss_str = f"{critic_losses[-1]:.4f}" if critic_losses else "N/A"
+                actor_loss_str = f"{actor_losses[-1]:.4f}" if actor_losses else "N/A"
+                print(
+                    f"Epoch {epoch + 1}/{self.config.num_epochs_per_round} | "
+                    f"Buffer size: {len(self.replay_buffer)} | "
+                    f"Critic loss: {critic_loss_str} | "
+                    f"Actor loss: {actor_loss_str}"
+                )
+
+        self._update_medoids()
+        self._update_gains()
+
+        return {
+            "critic_losses": critic_losses,
+            "actor_losses": actor_losses,
+            "buffer_size": len(self.replay_buffer),
+        }
+
     def multi_train(self, **kwargs: Any) -> dict[str, Any]:
         """Train the heuristic on shortcut data.
 
@@ -620,7 +704,7 @@ class CMDv2Heuristic(BaseHeuristic):
         }
 
 
-    def _collect_trajectory(self) -> list[tuple[NDArray, NDArray, int]]:
+    def _collect_trajectory(self) -> tuple[list[tuple[NDArray, NDArray, int]], int, int]:
         """Collect one trajectory using current actor.
 
         Returns:
@@ -656,7 +740,6 @@ class CMDv2Heuristic(BaseHeuristic):
         else:
             raise ValueError(f"Unknown sampling method: {self.config.sampling_method}")
         
-        print("Decided to sample from node pair:", source_id, target_id)
         self.node_pair_samples[source_id, target_id] += 1
         self.total_samples += 1
 
@@ -667,7 +750,7 @@ class CMDv2Heuristic(BaseHeuristic):
         # Sample random source state
         source_states = self.training_data.node_states[source_id]
         if len(source_states) == 0:
-            return []
+            return [], source_id, target_id
 
         source_state = source_states[self.rng.integers(len(source_states))]
 
@@ -706,13 +789,11 @@ class CMDv2Heuristic(BaseHeuristic):
                 break
         
         if successful:
-            print(f"Successfully reached target node {target_id} from source node {source_id} in {step+1} steps.")
             self.node_pair_successes[(source_id, target_id)].append(1)
         else:
-            print(f"Failed to reach target node {target_id} from source node {source_id} after {self.config.max_episode_steps} steps.")
             self.node_pair_successes[(source_id, target_id)].append(0)
 
-        return trajectory
+        return trajectory, source_id, target_id
 
     def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
         """Get the base skill action for (obs, target_node), or zeros if unavailable.
@@ -888,10 +969,6 @@ class CMDv2Heuristic(BaseHeuristic):
         states_actions_tensor = torch.cat([states_tensor, actions_tensor], dim=-1)
         future_atoms_tensor = torch.FloatTensor(future_atom_vectors).to(device)
 
-        # DEBUG: Print input ranges
-        print(f"States range: [{states_tensor.min():.3f}, {states_tensor.max():.3f}]")
-        print(f"Atoms sum per sample: {future_atoms_tensor.sum(dim=1)[:5]}")
-
         # === Update Critic ===
         self.critic_optimizer.zero_grad()
 
@@ -996,11 +1073,6 @@ class CMDv2Heuristic(BaseHeuristic):
         ).mean()
 
         actor_loss.backward()
-        # DEBUG: Print actor gradient norm
-        total_grad_norm = sum(
-            p.grad.norm().item() for p in self.actor.parameters() if p.grad is not None
-        )
-        print(f"Actor grad norm: {total_grad_norm:.6f}")
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.grad_clip)
         self.actor_optimizer.step()
 
@@ -1318,27 +1390,21 @@ class CMDv2Heuristic(BaseHeuristic):
 
     def _update_medoids(self) -> None:
         """Re-elect the medoid (most self-representative state) for each node."""
-        print("Updating node medoids...")
         for node_id, states in self.training_data.node_states.items():
             if not states:
                 continue
             best_state = min(states, key=lambda s: self.latent_dist(s, node_id))
             self._node_medoids[node_id] = best_state
-        print("Node medoids updated.")
 
     def _update_gains(self) -> None:
         """Update gain estimates for all node pairs based on current networks."""
-        print("\nUpdating node pair gains...")        
-        
         if self.config.auto_dist_scale:
-            print("  Auto-scaling dist_scale based on current latent distance estimates...")
             self.config.dist_scale = 1.0  # Reset to 1.0 before auto-scaling
             shortcut_dists = np.zeros((self.num_nodes, self.num_nodes))
             for source_id, target_id in self.training_data.unique_shortcuts:
-                print("    Estimating distance for shortcut:", source_id, target_id)
                 dist = self.estimate_node_distance(source_id, target_id)
                 shortcut_dists[source_id, target_id] = dist
-            
+
             ratios = shortcut_dists / self.original_node_pair_graph_dists
             q = self.config.dist_quantile
             ratio = 1 / np.quantile(ratios[np.isfinite(ratios)], q)
@@ -1346,17 +1412,28 @@ class CMDv2Heuristic(BaseHeuristic):
                 self.config.dist_scale = ratio
             else:
                 self.config.dist_scale = 1.0
-            print(f"  Auto-set dist_scale to {self.config.dist_scale:.4f} (quantile {q})")
-        
-        print("Tracking a distance:", self.estimate_node_distance(0, 1))
 
         for source_id, target_id in self.training_data.unique_shortcuts:
-            print("  Updating gain for node pair:", source_id, target_id)
             gain = self.get_gain(source_id, target_id)
             self.node_pair_gains[source_id, target_id] = gain
-
-        print("Updated node pair gains.\n")
             
+    def _update_first_edge_dict(self, source_id: int, target_id: int) -> None:
+        """Incrementally update first_edge_dict after adding edge (source_id -> target_id).
+
+        Only entries keyed by source_id's atoms can change: no other node's
+        first step is affected by a new outgoing edge from source_id.
+        """
+        if self.first_edge_dict is None:
+            return
+        source_atoms = frozenset(self.training_data.node_atoms[source_id])
+        for node in self.internal_graph.nodes:
+            if node.atoms == source_atoms:
+                continue
+            key = (source_atoms, node.atoms)
+            self.first_edge_dict[key] = compute_first_edge(
+                self.internal_graph, source_atoms, node.atoms
+            )
+
     def _update_graph_distances(self, source_node: int, target_node: int) -> None:
         """Update graph distances after adding a shortcut."""
         d = self.node_pair_graph_dists

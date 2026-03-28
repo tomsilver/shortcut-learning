@@ -78,6 +78,10 @@ from tamp_improv.approaches.improvisational.heuristics.heuristic_sac_v2 import (
     SACv2Heuristic,
     SACV2HeuristicConfig,
 )
+from tamp_improv.approaches.improvisational.heuristics.heuristic_dsac_v2 import (
+    DSACv2Heuristic,
+    DSACv2HeuristicConfig,
+)
 from tamp_improv.approaches.improvisational.heuristics.heuristic_none import (
     NoneHeuristic,
 )
@@ -352,6 +356,20 @@ def create_heuristic(
             graph_distances=graph_distances,
             system=system,
             config=sac_v2_config,
+            rng=rng,
+            first_edge_dict=first_edge_dict,
+        )
+    elif cfg.heuristic.type == "dsac_v2":
+        dsac_v2_config = dataclass_from_cfg(DSACv2HeuristicConfig, cfg.heuristic.sac)
+        dsac_v2_config.wandb_enabled = cfg.wandb_enabled
+        dsac_v2_config.device = "cuda" if torch.cuda.is_available() else "cpu"
+        print("DSAC V2 Config:", dsac_v2_config)
+
+        return DSACv2Heuristic(
+            training_data=training_data,
+            graph_distances=graph_distances,
+            system=system,
+            config=dsac_v2_config,
             rng=rng,
             first_edge_dict=first_edge_dict,
         )
@@ -739,6 +757,42 @@ def train_heuristic(
     training_data = heuristic.training_data
     system = heuristic.system
     round_results: list[dict[str, Any]] = []
+
+    if getattr(cfg.heuristic, "continuous_graduation", False):
+        def _graduation_callback(h: "BaseHeuristic", source_id: int, target_id: int) -> None:
+            """Add operator+skill to virtual_system and edge to internal_graph for one graduated pair."""
+            wrapper = HeuristicPolicyWrapper(heuristic=h, target_node_id=target_id)
+            add_shortcuts_to_graph(h.virtual_system, {(source_id, target_id): wrapper}, training_data)
+
+            cost = h.estimate_node_distance(source_id, target_id) if hasattr(h, "estimate_node_distance") else 1.0
+            source_atoms = training_data.node_atoms[source_id]
+            target_atoms = training_data.node_atoms[target_id]
+            source_node = h.internal_graph.node_map[frozenset(source_atoms)]
+            target_node = h.internal_graph.node_map[frozenset(target_atoms)]
+
+            obs, info = h.virtual_system.reset()
+            objects, _, _ = h.virtual_system.perceiver.reset(obs, info)
+            applicable_ops = find_applicable_operators(h.virtual_system, set(source_atoms), objects)
+            for op in applicable_ops:
+                next_atoms = set(source_atoms)
+                next_atoms.difference_update(op.delete_effects)
+                next_atoms.update(op.add_effects)
+                if frozenset(next_atoms) == frozenset(target_atoms):
+                    h.internal_graph.add_edge(source_node, target_node, op, is_shortcut=True, cost=cost, max_cost=cost)
+
+        print("\n=== Heuristic Training (continuous graduation) ===")
+        training_history = heuristic.train_continuous(graduate_fn=_graduation_callback)
+        round_data: dict[str, Any] = {
+            "critic_losses": training_history.get("critic_losses", []),
+            "actor_losses": training_history.get("actor_losses", []),
+            "buffer_size": training_history.get("buffer_size", 0),
+            "shortcut_rollouts": None,
+            "graph_distances": None,
+        }
+        round_data.update(_extract_heuristic_round_data(heuristic, training_data))
+        round_results.append(round_data)
+        print("\nHeuristic training complete")
+        return round_results
 
     for i in range(cfg.heuristic.num_rounds):
         print(f"\n=== Heuristic Training Round {i+1}/{cfg.heuristic.num_rounds} ===")

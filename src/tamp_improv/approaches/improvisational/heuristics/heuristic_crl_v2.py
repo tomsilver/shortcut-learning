@@ -74,9 +74,10 @@ class CRLV2HeuristicConfig:
     # Network architecture
     latent_dim: int = 32  # Dimension of embedding space (k)
     hidden_dims: list[int] | None = None  # Hidden layer sizes [64, 64]
-    normalize_embeddings: bool = (
-        True  # Whether to L2-normalize embeddings to unit sphere
-    )
+    normalize_embeddings: bool = False  # Whether to L2-normalize embeddings to unit sphere
+
+    # L2 regularization via dual Lagrangian (replaces normalization)
+    c: float = 1.0  # Target for E[||psi||²]; constrains embedding scale
 
     # Actor architecture (separate from critic)
     actor_hidden_dims: list[int] | None = None  # Actor hidden layers [64, 64]
@@ -352,9 +353,12 @@ class CRLv2Heuristic(BaseHeuristic):
             max_size=self.config.buffer_size, gamma=self.config.gamma
         )
 
+        # Lagrange multiplier for L2 constraint E[||psi||²] ≈ c
+        self.log_lambda = torch.zeros(1, device=torch.device(self.config.device), requires_grad=True)
+
         # Initialize optimizers
         self.critic_optimizer = torch.optim.Adam(
-            list(self.sa_encoder.parameters()) + list(self.g_encoder.parameters()),
+            list(self.sa_encoder.parameters()) + list(self.g_encoder.parameters()) + [self.log_lambda],
             lr=self.config.critic_lr,
         )
         self.actor_optimizer = torch.optim.Adam(
@@ -643,10 +647,6 @@ class CRLv2Heuristic(BaseHeuristic):
             source_id = flat_index // self.num_nodes
             target_id = flat_index % self.num_nodes
 
-            gain = gains[source_id, target_id]
-            ucb = ucbs[source_id, target_id]
-            print(f"UCB sampling selected node pair ({source_id}, {target_id}) with gain {gain:.4f} and ucb {ucb:.4f} while max ucb is {np.max(ucbs):.4f}")
-
         elif self.config.sampling_method == "stochastic_ucb":
             gains = self.node_pair_gains
             ucbs = np.sqrt(2 * np.log(max(self.total_samples, 1)) / (self.node_pair_samples + 1e-8))
@@ -662,7 +662,6 @@ class CRLv2Heuristic(BaseHeuristic):
         else:
             raise ValueError(f"Unknown sampling method: {self.config.sampling_method}")
         
-        print("Decided to sample from node pair:", source_id, target_id)
         self.node_pair_samples[source_id, target_id] += 1
         self.total_samples += 1
 
@@ -713,10 +712,8 @@ class CRLv2Heuristic(BaseHeuristic):
                 break
 
         if successful:
-            print(f"Successfully reached target node {target_id} from source node {source_id} in {step+1} steps.")
             self.node_pair_successes[(source_id, target_id)].append(1)
         else:
-            print(f"Failed to reach target node {target_id} from source node {source_id} after {self.config.max_episode_steps} steps.")
             self.node_pair_successes[(source_id, target_id)].append(0)
 
         return trajectory
@@ -872,47 +869,32 @@ class CRLv2Heuristic(BaseHeuristic):
         actions_tensor = torch.FloatTensor(actions).to(device)
         future_atoms_tensor = torch.FloatTensor(future_atom_vectors).to(device)
 
-        # DEBUG: Print input ranges
-        print(f"States range: [{states_tensor.min():.3f}, {states_tensor.max():.3f}]")
-        print(f"Atoms sum per sample: {future_atoms_tensor.sum(dim=1)[:5]}")
-
         # === Update Critic ===
         self.critic_optimizer.zero_grad()
 
-        # Encode (state, action) pairs
-        sa_repr = self.sa_encoder(states_tensor, actions_tensor)
+        # Encode (state, action) pairs and goal atoms
+        sa_repr = self.sa_encoder(states_tensor, actions_tensor)  # phi
+        g_repr = self.g_encoder(future_atoms_tensor)               # psi
 
-        # Encode goal atoms
-        g_repr = self.g_encoder(future_atoms_tensor)
+        B = sa_repr.shape[0]
 
-        # Normalize if configured
-        if self.config.normalize_embeddings:
-            sa_repr = F.normalize(sa_repr, p=2, dim=-1)
-            g_repr = F.normalize(g_repr, p=2, dim=-1)
+        # L2 regularization: constrain E[||psi||²] ≈ c via dual Lagrangian
+        l2 = (g_repr ** 2).sum(dim=1).mean()
 
-        # DEBUG: Print embedding statistics
-        print(f"sa_repr std: {sa_repr.std():.4f}, g_repr std: {g_repr.std():.4f}")
+        # Alignment: mean squared L2 between matched (phi_i, psi_i) pairs
+        l_align = ((sa_repr - g_repr) ** 2).mean(dim=1)  # (B,)
 
-        # Compute contrastive logits: <sa_repr[i], g_repr[j]>
-        # Shape: (batch_size, batch_size)
-        logits = torch.einsum("ik,jk->ij", sa_repr, g_repr)
+        # Uniformity: log-sum-exp of negative pairwise distances (off-diagonal)
+        pdist = ((sa_repr.unsqueeze(1) - g_repr.unsqueeze(0)) ** 2).mean(dim=-1)  # (B, B)
+        I = torch.eye(B, device=device)
+        l_unif = (
+            torch.logsumexp(-(pdist * (1 - I)), dim=1) +
+            torch.logsumexp(-(pdist.T * (1 - I)), dim=1)
+        ) / 2.0  # (B,)
 
-        # Contrastive loss with balanced alignment and uniformity
-        # BCE with reduction="none" to compute per-element losses
-        batch_size = logits.shape[0]
-        labels = torch.eye(batch_size, device=device)
-
-        per_element_loss = F.binary_cross_entropy_with_logits(
-            logits, labels, reduction="none"
-        )
-
-        # Separate alignment (diagonal) and uniformity (off-diagonal) losses
-        diag_mask = labels.bool()
-        alignment_loss = per_element_loss[diag_mask].mean()  # Mean over B diagonal
-        uniformity_loss = per_element_loss[~diag_mask].mean()  # Mean over B²-B off-diag
-
-        # Equal weighting of alignment and uniformity
-        critic_loss = alignment_loss + uniformity_loss
+        # Dual Lagrangian: equality constraint E[||psi||²] = c
+        dual_loss = self.log_lambda * (self.config.c - l2.detach())
+        critic_loss = (l_align + l_unif).mean() + self.log_lambda.detach() * l2 + dual_loss
 
         critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(
@@ -972,24 +954,10 @@ class CRLv2Heuristic(BaseHeuristic):
         # Encode goal atoms (detached - only actor should receive gradients)
         g_repr_actor = self.g_encoder(future_atoms_tensor).detach()
 
-        # Normalize if configured
-        if self.config.normalize_embeddings:
-            sa_repr_actor = F.normalize(sa_repr_actor, p=2, dim=-1)
-            g_repr_actor = F.normalize(g_repr_actor, p=2, dim=-1)
-
-        # Actor loss: maximize inner product <sa_repr, g_repr>
-        # Inner product along batch: einsum('ik,ik->i')
-        alignment = torch.einsum("ik,ik->i", sa_repr_actor, g_repr_actor)
-
-        # We want to maximize alignment, so minimize negative alignment
-        actor_loss = -alignment.mean()
+        # Actor loss: minimize L2 alignment between sa_repr and g_repr
+        actor_loss = ((sa_repr_actor - g_repr_actor) ** 2).mean(dim=1).mean()
 
         actor_loss.backward()
-        # DEBUG: Print actor gradient norm
-        total_grad_norm = sum(
-            p.grad.norm().item() for p in self.actor.parameters() if p.grad is not None
-        )
-        print(f"Actor grad norm: {total_grad_norm:.6f}")
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.grad_clip)
         self.actor_optimizer.step()
 
@@ -1034,11 +1002,6 @@ class CRLv2Heuristic(BaseHeuristic):
 
             # Encode goal atoms
             g_repr = self.g_encoder(goal_tensor)
-
-            # Normalize if configured
-            if self.config.normalize_embeddings:
-                sa_repr = F.normalize(sa_repr, p=2, dim=-1)
-                g_repr = F.normalize(g_repr, p=2, dim=-1)
 
             return torch.norm(sa_repr - g_repr, p=2).item()
 
@@ -1326,8 +1289,6 @@ class CRLv2Heuristic(BaseHeuristic):
 
     def _update_gains(self) -> None:
         """Update gain estimates for all node pairs based on current networks."""
-        print("\nUpdating node pair gains...")
-
         if self.config.auto_dist_scale:
             self.config.dist_scale = 1.0  # Reset to 1.0 before auto-scaling
             shortcut_dists = np.zeros((self.num_nodes, self.num_nodes))
@@ -1346,13 +1307,9 @@ class CRLv2Heuristic(BaseHeuristic):
                     self.config.dist_scale = 1.0
             else:
                 self.config.dist_scale = 1.0
-            print(f"  Auto-set dist_scale to {self.config.dist_scale:.4f} (quantile {q})")
-
         for source_id, target_id in self.training_data.unique_shortcuts:
             gain = self.get_gain(source_id, target_id)
             self.node_pair_gains[source_id, target_id] = gain
-
-        print("Updated node pair gains.\n")
 
     def _update_graph_distances(self, source_node: int, target_node: int) -> None:
         """Update graph distances after adding a shortcut."""
@@ -1399,6 +1356,7 @@ class CRLv2Heuristic(BaseHeuristic):
         torch.save(self.sa_encoder.state_dict(), os.path.join(path, "sa_encoder.pt"))
         torch.save(self.g_encoder.state_dict(), os.path.join(path, "g_encoder.pt"))
         torch.save(self.actor.state_dict(), os.path.join(path, "actor.pt"))
+        torch.save(self.log_lambda, os.path.join(path, "log_lambda.pt"))
 
         # Save atom indexing
         with open(os.path.join(path, "atom_index.pkl"), "wb") as f:
@@ -1431,6 +1389,10 @@ class CRLv2Heuristic(BaseHeuristic):
         self.actor.load_state_dict(
             torch.load(os.path.join(path, "actor.pt"), map_location=device)
         )
+        log_lambda_path = os.path.join(path, "log_lambda.pt")
+        if os.path.exists(log_lambda_path):
+            self.log_lambda = torch.load(log_lambda_path, map_location=device)
+            self.log_lambda.requires_grad_(True)
 
         # Load atom indexing
         with open(os.path.join(path, "atom_index.pkl"), "rb") as f:

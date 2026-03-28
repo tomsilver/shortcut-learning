@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Type
 
 import hydra
+import torch
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
@@ -76,6 +77,9 @@ def save_results(results: PipelineResults, path: Path):
 @hydra.main(version_base=None, config_path="configs", config_name="unit_test")
 def main(cfg: DictConfig) -> float:
     """Main training function using pipeline V2."""
+    if torch.cuda.is_available():
+        _dummy = torch.zeros(1, device="cuda")
+
     print("=" * 80)
     print(f"Training SLAP with Pipeline V2 on {cfg.env.name}")
     print("=" * 80)

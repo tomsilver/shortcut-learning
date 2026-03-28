@@ -5,7 +5,7 @@ eval_heuristic_only: false
 wandb_enabled: false
 
 env:
-  name: ClutteredDrawerTAMPSystem
+  name: GridworldContinuousTAMPSystem
   # Gridworld
   num_cells: 3
   num_states_per_cell: 10
@@ -27,13 +27,14 @@ collection:
 
 heuristic:
   # Heuristic Parameters
-  type: cmd_v2
+  type: dsac_v2
 
   # Pruning Parameters
   max_shortcuts_per_graph: 10
 
   # Multi-train parameters
   num_rounds: 1
+  continuous_graduation: false
   success_threshold: 0.50
 
 
@@ -92,6 +93,8 @@ heuristic:
     auto_dist_scale: true  # Whether to automatically set dist_scale based on quantile
     residualize: true  # Whether to residualize actor actions with base skill actions
 
+    gain_update_frequency: 100
+    medoid_update_frequency: 100
     num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
   # SAC V2 heuristic parameters (small values for fast unit tests)
   sac:
@@ -112,8 +115,8 @@ heuristic:
     num_epochs_per_round: 5
     max_episode_steps: 100
     learn_frequency: 1
-    gain_update_frequency: 10
-    medoid_update_frequency: 10
+    gain_update_frequency: 100
+    medoid_update_frequency: 100
     iters_per_epoch: 5
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -124,6 +127,8 @@ heuristic:
     beta: 1.0
     sampling_method: uniform
     ucb_beta: 1.0
+    num_bins: 51
+    max_bin: 500
     gain_method: exact
     dist_scale: 1.0
     dist_quantile: 0.9

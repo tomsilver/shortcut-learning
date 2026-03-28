@@ -7,7 +7,7 @@ wandb_enabled: false
 env:
   name: GridworldContinuousTAMPSystem
   # Gridworld
-  num_cells: 5
+  num_cells: 7
   num_states_per_cell: 10
   num_teleporters: 0
   pacman: false
@@ -34,10 +34,11 @@ heuristic:
 
   # Multi-train parameters
   num_rounds: 1
+  continuous_graduation: false
   success_threshold: 0.90
 
 
-  # Rollout Heuristic Parameters
+  # Rollout Heuristic Parameters, R = 100 * 50 = 5000
   rollouts:
     use_random_rollouts: true
     num_rollouts_per_node: 100
@@ -46,7 +47,7 @@ heuristic:
     action_scale: 1.0
     success_threshold: 0.10
     gain_method: exact
-    auto_dist_scale: false
+    auto_dist_scale: true
     dist_scale: 1.0
     dist_quantile: 0.9
 
@@ -63,6 +64,8 @@ heuristic:
     policy_temperature: 0.3
     iters_per_epoch: 10
     learn_frequency: 1
+    gain_update_frequency: 50
+    medoid_update_frequency: 50
 
     num_epochs_per_round: 500  # Epochs per round (used as num_epochs_per_round in multi_train)
     trajectories_per_epoch: 10
@@ -105,8 +108,8 @@ heuristic:
     num_epochs_per_round: 500
     max_episode_steps: 100
     learn_frequency: 1
-    gain_update_frequency: 10
-    medoid_update_frequency: 10
+    gain_update_frequency: 50
+    medoid_update_frequency: 50
     iters_per_epoch: 100
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -117,16 +120,18 @@ heuristic:
     beta: 1.0
     sampling_method: uniform
     ucb_beta: 1.0
+    num_bins: 51
+    max_bin: 500
     gain_method: exact
     dist_scale: 1.0
     dist_quantile: 0.9
-    auto_dist_scale: false
+    auto_dist_scale: true
     residualize: false
     max_atom_size: 50
 
     num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
-
+# M = 10 * 100 * 10 = 10000
 policy:
   use_multi_rl: false
 
@@ -137,7 +142,7 @@ policy:
   gamma: 0.99
   ent_coef: 0.01
   deterministic: false
-  early_stopping: false
+  early_stopping: true
   early_stopping_patience: 10
   max_episode_steps: 100
   episodes_per_scenario: 100

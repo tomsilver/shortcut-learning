@@ -12,7 +12,7 @@
 #       name=LABEL           human-readable job/dir label       (default: exp001, exp002, ...)
 #       config=NAME          Hydra --config-name value          (default: gridworld_continuous)
 #       time=HH:MM:SS        SLURM wall-time limit              (default: 04:00:00)
-#       gpu=true/false       request GPU partition              (default: false)
+#       gpu=true/false/mig   true=gpu40 (4 CPUs), mig=mig partition (1 CPU), false=CPU only
 #       overwrite=true/false overwrite existing output dir      (default: false)
 #   - Lines starting with # are comments
 #
@@ -30,7 +30,6 @@ SLURM_TIME="04:00:00"
 SLURM_CPUS=8
 SLURM_MEM="32G"
 DEFAULT_CONFIG="gridworld_continuous"
-DEFAULT_GPU=false
 # ─────────────────────────────────────────────────────────────────────────────
 
 SWEEP_FILE="${1:?Usage: $0 <sweep_file.txt> [--dry-run]}"
@@ -41,8 +40,6 @@ mkdir -p "$SCRATCH_DIR/slurm_logs" "$SCRATCH_DIR/tmp" "$SCRATCH_DIR/outputs"
 
 LINE_NUM=0
 SUBMITTED=0
-GPU_SUBMITTED=0   # tracks GPU jobs submitted this invocation
-MIG_LIMIT=14      # first N gpu jobs → mig partition; rest → nomig
 
 while IFS= read -r line || [[ -n "$line" ]]; do
     LINE_NUM=$((LINE_NUM + 1))
@@ -72,9 +69,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line/time=${JOB_TIME}/}"
     fi
 
-    # Extract optional gpu=true/false token
-    USE_GPU="$DEFAULT_GPU"
-    if [[ "$line" =~ (^|[[:space:]])gpu=(true|false) ]]; then
+    # Extract optional gpu=true/false/mig token
+    USE_GPU="false"
+    if [[ "$line" =~ (^|[[:space:]])gpu=(true|false|mig) ]]; then
         USE_GPU="${BASH_REMATCH[2]}"
         line="${line/gpu=${USE_GPU}/}"
     fi
@@ -123,22 +120,18 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 
     # Build resource directives depending on gpu= flag
     if [ "$USE_GPU" = "true" ]; then
-        if [ "$GPU_SUBMITTED" -lt "$MIG_LIMIT" ]; then
-            GPU_PARTITION="mig"
-            RESOURCE_LINES="#SBATCH --ntasks=1
+        RESOURCE_LINES="#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=${SLURM_MEM}
+#SBATCH --constraint=\"nomig&gpu40\"
+#SBATCH --gres=gpu:1"
+    elif [ "$USE_GPU" = "mig" ]; then
+        RESOURCE_LINES="#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=32G
+#SBATCH --mem=${SLURM_MEM}
 #SBATCH --partition=mig
 #SBATCH --gres=gpu:1"
-        else
-            GPU_PARTITION="cpu"
-            RESOURCE_LINES="#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --partition=cpu"
-        fi
     else
-        GPU_PARTITION=""
         RESOURCE_LINES="#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=${SLURM_CPUS}
 #SBATCH --mem=${SLURM_MEM}"
@@ -211,18 +204,16 @@ SBATCH_EOF
         echo "[DRY RUN] Would submit: $FULL_NAME"
         echo "          Config     : $BASE_CONFIG"
         echo "          Time limit : $JOB_TIME"
-        echo "          GPU        : $USE_GPU${GPU_PARTITION:+ ($GPU_PARTITION)}"
         echo "          Overwrite  : $OVERWRITE"
         echo "          Overrides  : $line $SEED_OVERRIDE"
         echo "          Script     : $TMP_SCRIPT"
     else
         JOB_ID=$(sbatch "$TMP_SCRIPT" | awk '{print $NF}')
-        echo "Submitted job $JOB_ID  →  $FULL_NAME  (config: $BASE_CONFIG, time: $JOB_TIME, gpu: $USE_GPU${GPU_PARTITION:+ ($GPU_PARTITION)})"
+        echo "Submitted job $JOB_ID  →  $FULL_NAME  (config: $BASE_CONFIG, time: $JOB_TIME)"
         echo "  Overrides: $line $SEED_OVERRIDE"
     fi
 
     SUBMITTED=$((SUBMITTED + 1))
-    [ "$USE_GPU" = "true" ] && GPU_SUBMITTED=$((GPU_SUBMITTED + 1))
     done  # end seeds loop
 done < "$SWEEP_FILE"
 

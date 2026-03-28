@@ -307,6 +307,58 @@ class ContinuousActor(nn.Module):
         return action, log_prob.sum(dim=-1)
 
 
+class DistributionalQNetwork(nn.Module):
+    """Q(state, action, goal_atoms) → probability distribution over distance bins.
+
+    Based on SoRB (Eysenbach et al., 2019).  Outputs ``num_bins`` logits where
+    bin ``i`` represents a distance of ``i * max_bin / (num_bins - 1)`` steps.
+    The final bin is a catch-all for distances ≥ ``max_bin``.
+
+    The distributional Bellman update (γ=1, r=-1) is a right-shift:
+    - Goal reached  → all probability mass in bin 0
+    - Otherwise     → mass at bin i moves to bin i+1; catch-all absorbs overflow
+    """
+
+    def __init__(
+        self,
+        state_dim: int,
+        action_dim: int,
+        atom_dim: int,
+        num_bins: int,
+        hidden_dims: list[int] | None = None,
+    ):
+        super().__init__()
+        self.num_bins = num_bins
+        if hidden_dims is None:
+            hidden_dims = [256, 256]
+        input_dim = state_dim + action_dim + atom_dim
+        layers: list[nn.Module] = []
+        prev = input_dim
+        for h in hidden_dims:
+            layers += [nn.Linear(prev, h), nn.ReLU()]
+            prev = h
+        layers.append(nn.Linear(prev, num_bins))
+        self.net = nn.Sequential(*layers)
+
+    def forward(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        goals: torch.Tensor,
+    ) -> torch.Tensor:
+        """Returns (B, num_bins) logits."""
+        return self.net(torch.cat([states, actions, goals], dim=-1))
+
+    def get_probs(
+        self,
+        states: torch.Tensor,
+        actions: torch.Tensor,
+        goals: torch.Tensor,
+    ) -> torch.Tensor:
+        """Returns (B, num_bins) probabilities via softmax."""
+        return F.softmax(self.forward(states, actions, goals), dim=-1)
+
+
 class ResidualContinuousActor(nn.Module):
     """Residual actor: output = base_action + pi(state, goal, base_action).
 
