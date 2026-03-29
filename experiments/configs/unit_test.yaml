@@ -94,7 +94,7 @@ heuristic:
     residualize: true  # Whether to residualize actor actions with base skill actions
 
     gain_update_frequency: 100
-    medoid_update_frequency: 100
+    medoid_update_frequency: 10
     num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
   # SAC V2 heuristic parameters (small values for fast unit tests)
   sac:
@@ -116,7 +116,7 @@ heuristic:
     max_episode_steps: 100
     learn_frequency: 1
     gain_update_frequency: 100
-    medoid_update_frequency: 100
+    medoid_update_frequency: 10
     iters_per_epoch: 5
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -145,6 +145,7 @@ policy:
   type: multiRL
   learning_rate: 3.0e-4
   batch_size: 4
+  n_envs: 1
   n_epochs: 1
   gamma: 0.99
   ent_coef: 0.01

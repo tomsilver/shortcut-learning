@@ -65,7 +65,7 @@ heuristic:
     iters_per_epoch: 10
     learn_frequency: 1
     gain_update_frequency: 50
-    medoid_update_frequency: 50
+    medoid_update_frequency: 10
 
     num_epochs_per_round: 500  # Epochs per round (used as num_epochs_per_round in multi_train)
     trajectories_per_epoch: 10
@@ -109,7 +109,7 @@ heuristic:
     max_episode_steps: 100
     learn_frequency: 1
     gain_update_frequency: 50
-    medoid_update_frequency: 50
+    medoid_update_frequency: 10
     iters_per_epoch: 100
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -137,7 +137,8 @@ policy:
 
   type: multiRL
   learning_rate: 3.0e-4
-  batch_size: 32
+  batch_size: 400
+  n_envs: 16
   n_epochs: 10
   gamma: 0.99
   ent_coef: 0.01
