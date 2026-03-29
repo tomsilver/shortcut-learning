@@ -23,8 +23,8 @@ collection:
   max_steps_per_edge: 600
   planner_id: pyperplan
   num_cost_rollouts: 100
-  load_data: false
-  training_data_path: null
+  load_data: true
+  training_data_path: /n/fs/recbench/training_data/cleanup_table
 
 heuristic:
   # Heuristic Parameters

@@ -23,8 +23,8 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CODE_DIR="/home/de7281/thesis/shortcut-learning"
-SCRATCH_DIR="/scratch/gpfs/TSILVER/de7281/shortcut_learning"
+CODE_DIR="/n/fs/recbench/shortcut-learning"
+SCRATCH_DIR="/n/fs/recbench/slap_outputs"
 CONDA_ENV="slap_env"
 SLURM_TIME="04:00:00"
 SLURM_CPUS=8
@@ -119,17 +119,10 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     TMP_SCRIPT="$SCRATCH_DIR/tmp/sweep_${FULL_NAME}_$(date +%s%N).sh"
 
     # Build resource directives depending on gpu= flag
-    if [ "$USE_GPU" = "true" ]; then
+    if [ "$USE_GPU" = "true" ] || [ "$USE_GPU" = "mig" ]; then
         RESOURCE_LINES="#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=${SLURM_MEM}
-#SBATCH --constraint=\"nomig&gpu40\"
-#SBATCH --gres=gpu:1"
-    elif [ "$USE_GPU" = "mig" ]; then
-        RESOURCE_LINES="#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=${SLURM_MEM}
-#SBATCH --partition=mig
 #SBATCH --gres=gpu:1"
     else
         RESOURCE_LINES="#SBATCH --ntasks=1
@@ -148,12 +141,12 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 #SBATCH --nodes=1
 ${RESOURCE_LINES}
 
-module load intel-mkl/2024.2
+module load anaconda3/2024.02
 export LAPACK_DIR="/usr/lib64"
 export LIBGFORTRAN_DIR="/usr/lib64"
 export BLAS_DIR="/usr/lib64"
 
-source ~/miniconda3/etc/profile.d/conda.sh
+source /usr/local/anaconda3/2024.02/etc/profile.d/conda.sh
 conda activate "${CONDA_ENV}"
 
 cd "${CODE_DIR}" || exit 1

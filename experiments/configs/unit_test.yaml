@@ -5,7 +5,7 @@ eval_heuristic_only: false
 wandb_enabled: false
 
 env:
-  name: GridworldContinuousTAMPSystem
+  name: ClutteredDrawerTAMPSystem
   # Gridworld
   num_cells: 3
   num_states_per_cell: 10
@@ -23,7 +23,7 @@ collection:
   planner_id: pyperplan
   num_cost_rollouts: 100
   load_data: false
-  training_data_path: null
+  training_data_path: /n/fs/recbench/training_data/cluttered_drawer
 
 heuristic:
   # Heuristic Parameters
