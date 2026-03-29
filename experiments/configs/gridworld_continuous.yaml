@@ -7,7 +7,7 @@ wandb_enabled: false
 env:
   name: GridworldContinuousTAMPSystem
   # Gridworld
-  num_cells: 7
+  num_cells: 5
   num_states_per_cell: 10
   num_teleporters: 0
   pacman: false
@@ -154,7 +154,7 @@ policy:
 evaluation:
   render: false
   fast_eval: false
-  num_episodes: 500
+  num_episodes: 50
   max_episode_steps: 100
 
 

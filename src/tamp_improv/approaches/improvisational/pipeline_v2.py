@@ -781,7 +781,10 @@ def train_heuristic(
                     h.internal_graph.add_edge(source_node, target_node, op, is_shortcut=True, cost=cost, max_cost=cost)
 
         print("\n=== Heuristic Training (continuous graduation) ===")
-        training_history = heuristic.train_continuous(graduate_fn=_graduation_callback)
+        training_history = heuristic.train_continuous(
+            graduate_fn=_graduation_callback,
+            success_threshold=cfg.heuristic.success_threshold,
+        )
         round_data: dict[str, Any] = {
             "critic_losses": training_history.get("critic_losses", []),
             "actor_losses": training_history.get("actor_losses", []),

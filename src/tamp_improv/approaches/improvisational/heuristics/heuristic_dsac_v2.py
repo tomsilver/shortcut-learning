@@ -26,6 +26,7 @@ Key components:
 - Auto-entropy tuning: log_alpha updated to maintain target entropy
 """
 
+import copy
 import os
 import pickle
 import random
@@ -48,6 +49,7 @@ from tamp_improv.approaches.improvisational.graph import (
     PlanningGraphEdge,
     PlanningGraphNode,
 )
+from tamp_improv.approaches.improvisational.graph_training import compute_first_edge
 from tamp_improv.approaches.improvisational.heuristics.base import BaseHeuristic
 from tamp_improv.approaches.improvisational.heuristics.networks import (
     ContinuousActor,
@@ -214,6 +216,7 @@ class DSACv2Heuristic(BaseHeuristic):
         self.rng = rng
         self.first_edge_dict = first_edge_dict
         self.internal_graph = training_data.graph
+        self.virtual_system = copy.deepcopy(system)
 
         if config is None:
             config = DSACv2HeuristicConfig()
@@ -893,6 +896,100 @@ class DSACv2Heuristic(BaseHeuristic):
         L = self.estimate_node_distance(source_node, target_node)
         via_xy = d[:, source_node][:, None] + L + d[target_node, :][None, :]
         self.node_pair_graph_dists = np.minimum(d, via_xy)
+
+    def _update_first_edge_dict(self, source_id: int, target_id: int) -> None:
+        """Incrementally update first_edge_dict after adding edge (source_id -> target_id).
+
+        Only entries keyed by source_id's atoms can change: no other node's
+        first step is affected by a new outgoing edge from source_id.
+        """
+        if self.first_edge_dict is None:
+            return
+        source_atoms = frozenset(self.training_data.node_atoms[source_id])
+        for node in self.internal_graph.nodes:
+            if node.atoms == source_atoms:
+                continue
+            key = (source_atoms, node.atoms)
+            self.first_edge_dict[key] = compute_first_edge(
+                self.internal_graph, source_atoms, node.atoms
+            )
+
+    def train_continuous(
+        self,
+        graduate_fn: Any = None,
+        success_threshold: float = 0.9,
+    ) -> dict[str, Any]:
+        """Train with continuous graduation: graduate pairs online as they become reliable.
+
+        Args:
+            graduate_fn: Callable(heuristic, source_id, target_id) invoked on each
+                graduation. Responsible for adding the operator+skill to virtual_system
+                and the corresponding edge to internal_graph. If None, only the
+                distance/gain updates are performed (useful for testing).
+            success_threshold: Sliding-window success rate required to graduate a pair.
+                Should match cfg.heuristic.success_threshold (default 0.9).
+
+        Returns:
+            Dictionary with training statistics.
+        """
+        self.total_samples = 0
+        self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
+        # Do NOT reset node_pair_successes — the sliding window persists across epochs.
+
+        critic_losses: list[float] = []
+        actor_losses: list[float] = []
+
+        self._update_medoids()
+        self._update_gains()
+
+        for epoch in range(self.config.num_epochs_per_round):
+            for _ in range(self.config.trajectories_per_epoch):
+                trajectory, goal_vec, target_id, source_id = self._collect_trajectory()
+                self._add_to_buffer_with_her(trajectory, goal_vec, target_id, source_id)
+
+                # Check if this pair just crossed the graduation threshold
+                successes = self.node_pair_successes.get((source_id, target_id), [])
+                k = self.config.num_reliability_trials
+                if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
+                    print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
+                    if graduate_fn is not None:
+                        graduate_fn(self, source_id, target_id)
+                    self._update_graph_distances(source_id, target_id)
+                    self._update_first_edge_dict(source_id, target_id)
+                    self._update_gains()
+                    # Clear success record so the pair must re-earn graduation before re-adding
+                    self.node_pair_successes[(source_id, target_id)].clear()
+
+            if (epoch + 1) % self.config.learn_frequency == 0:
+                if len(self.replay_buffer) >= self.config.batch_size:
+                    for _ in range(self.config.iters_per_epoch):
+                        c_loss, a_loss = self._update_networks()
+                        critic_losses.append(c_loss)
+                        actor_losses.append(a_loss)
+
+            if (epoch + 1) % self.config.medoid_update_frequency == 0:
+                self._update_medoids()
+
+            if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
+                self._update_gains()
+
+            if (epoch + 1) % 10 == 0 or epoch == 0:
+                c_str = f"{critic_losses[-1]:.4f}" if critic_losses else "N/A"
+                a_str = f"{actor_losses[-1]:.4f}" if actor_losses else "N/A"
+                print(
+                    f"Epoch {epoch+1}/{self.config.num_epochs_per_round} | "
+                    f"Buffer: {len(self.replay_buffer)} | "
+                    f"Critic: {c_str} | Actor: {a_str}"
+                )
+
+        self._update_medoids()
+        self._update_gains()
+
+        return {
+            "critic_losses": critic_losses,
+            "actor_losses": actor_losses,
+            "buffer_size": len(self.replay_buffer),
+        }
 
     def estimate_weight(self, source_node: int, target_node: int) -> float:
         if source_node == target_node:

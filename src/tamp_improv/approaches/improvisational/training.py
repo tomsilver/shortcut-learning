@@ -357,6 +357,8 @@ def run_evaluation_episode_with_caching(
     print("First step result:", step_result)
     print("Current path:", approach.current_path)
 
+    trajectory_positions: list[list[float]] = [_flatten_obs(obs)]
+
     # Check for early termination cases from reset
     if step_result.terminate:
         # Check if it's "already at goal" (success) or "no path found" (failure)
@@ -373,6 +375,7 @@ def run_evaluation_episode_with_caching(
         episode_info["success"] = success
         episode_info["true_steps"] = step_count
         episode_info["reward"] = total_reward
+        episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
 
     best_edges = approach.current_path
@@ -380,6 +383,7 @@ def run_evaluation_episode_with_caching(
         episode_info["success"] = success
         episode_info["true_steps"] = step_count
         episode_info["reward"] = total_reward
+        episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
     prefix_ids_for_edge: list[tuple[int, ...]] = []
     running_prefix: tuple[int, ...] = (0,)
@@ -394,6 +398,7 @@ def run_evaluation_episode_with_caching(
 
     # Execute first action from the reset
     obs, reward, terminated, truncated, info = system.env.step(step_result.action)
+    trajectory_positions.append(_flatten_obs(obs))
     total_reward += float(reward)
     step_count += 1
     if step_result.terminate or terminated or truncated:
@@ -404,6 +409,7 @@ def run_evaluation_episode_with_caching(
         episode_info["success"] = success
         episode_info["true_steps"] = step_count
         episode_info["reward"] = total_reward
+        episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
 
     # Execute segments: initial segment + all edges in the planned path
@@ -419,6 +425,7 @@ def run_evaluation_episode_with_caching(
             # Execute cached actions
             for a in actions:
                 obs, reward, terminated, truncated, info = system.env.step(a)
+                trajectory_positions.append(_flatten_obs(obs))
                 total_reward += float(reward)
                 step_count += 1
                 done = bool(terminated or truncated)
@@ -431,6 +438,7 @@ def run_evaluation_episode_with_caching(
                 obs, reward, terminated, truncated, info = system.env.step(
                     step_result.action
                 )
+                trajectory_positions.append(_flatten_obs(obs))
                 total_reward += float(reward)
                 step_count += 1
                 done = bool(step_result.terminate or terminated or truncated)
@@ -446,6 +454,7 @@ def run_evaluation_episode_with_caching(
             obs, reward, terminated, truncated, info = system.env.step(
                 step_result.action
             )
+            trajectory_positions.append(_flatten_obs(obs))
             total_reward += float(reward)
             step_count += 1
             if step_result.terminate or terminated or truncated:
@@ -459,6 +468,7 @@ def run_evaluation_episode_with_caching(
     episode_info["success"] = success
     episode_info["true_steps"] = step_count
     episode_info["reward"] = total_reward
+    episode_info["trajectory_positions"] = trajectory_positions
     return total_reward, step_count, success, episode_info
 
 

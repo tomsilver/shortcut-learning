@@ -608,6 +608,7 @@ class CMDv2Heuristic(BaseHeuristic):
     def train_continuous(
         self,
         graduate_fn: Any = None,
+        success_threshold: float = 0.9,
     ) -> dict[str, Any]:
         """Train with continuous graduation: graduate pairs online as they become reliable.
 
@@ -622,6 +623,8 @@ class CMDv2Heuristic(BaseHeuristic):
                 graduation. Responsible for adding the operator+skill to virtual_system
                 and the corresponding edge to internal_graph. If None, only the
                 distance/gain updates are performed (useful for testing).
+            success_threshold: Sliding-window success rate required to graduate a pair.
+                Should match cfg.heuristic.success_threshold (default 0.9).
 
         Returns:
             Dictionary with training statistics.
@@ -644,7 +647,7 @@ class CMDv2Heuristic(BaseHeuristic):
                 # Check if this pair just crossed the graduation threshold
                 successes = self.node_pair_successes.get((source_id, target_id), [])
                 k = self.config.num_reliability_trials
-                if k > 0 and len(successes) >= k and np.mean(successes) > self.config.threshold:
+                if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
                     print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
                     if graduate_fn is not None:
                         graduate_fn(self, source_id, target_id)
