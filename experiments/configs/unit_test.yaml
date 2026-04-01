@@ -2,6 +2,7 @@ seed: 42
 debug: true
 render_mode: null
 eval_heuristic_only: false
+resume_from: null
 wandb_enabled: false
 
 env:
@@ -94,7 +95,7 @@ heuristic:
     residualize: true  # Whether to residualize actor actions with base skill actions
 
     gain_update_frequency: 100
-    medoid_update_frequency: 10
+    medoid_update_frequency: 100
     num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
   # SAC V2 heuristic parameters (small values for fast unit tests)
   sac:

@@ -170,8 +170,13 @@ def plot_shortcut_quality_per_round(results: Any, save_dir: Path) -> None:
     rounds_with_rollouts = [
         (i, r) for i, r in enumerate(rounds) if r.get("shortcut_rollouts")
     ]
+
+    # Also include Stage 5.5 quality results if available
+    if getattr(results, "shortcut_quality_results", None):
+        rounds_with_rollouts.append(("final", {"shortcut_rollouts": results.shortcut_quality_results}))
+
     if not rounds_with_rollouts:
-        print("[SKIP] No shortcut rollout data in training_rounds.")
+        print("[SKIP] No shortcut rollout data in training_rounds or shortcut_quality_results.")
         return
 
     out = save_dir / "shortcut_quality"
@@ -659,6 +664,10 @@ def plot_eval_trajectories(results: Any, save_dir: Path, max_plots: int = 20) ->
     for idx, ep in enumerate(episodes[:max_plots]):
         positions = ep.get("trajectory_positions")
         if not positions or len(positions) < 2:
+            start_pos = positions[0][:2] if positions and len(positions) > 0 else "N/A"
+            print(f"[SKIP] Eval #{idx}: trajectory_positions={'None' if positions is None else f'len={len(positions)}'}, "
+                  f"start_pos={start_pos}, success={ep.get('success')}, steps={ep.get('true_steps')}, "
+                  f"info keys={list(ep.keys())}")
             continue
 
         fig, ax = plt.subplots(figsize=(8, 8))
@@ -717,12 +726,15 @@ def plot_pruned_shortcut_rollouts(results: Any, save_dir: Path) -> None:
         print("[SKIP] Missing grid_config or node_atoms.")
         return
 
-    # Find the last round that has shortcut_rollouts
+    # Prefer Stage 5.5 quality results; fall back to last training round with rollouts
     last_rollouts: list[dict[str, Any]] | None = None
-    for rd in reversed(results.training_rounds):
-        if rd.get("shortcut_rollouts"):
-            last_rollouts = rd["shortcut_rollouts"]
-            break
+    if results.shortcut_quality_results:
+        last_rollouts = results.shortcut_quality_results
+    else:
+        for rd in reversed(results.training_rounds):
+            if rd.get("shortcut_rollouts"):
+                last_rollouts = rd["shortcut_rollouts"]
+                break
     if not last_rollouts:
         print("[SKIP] No shortcut_rollouts in any training round.")
         return

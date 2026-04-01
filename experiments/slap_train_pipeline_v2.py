@@ -121,6 +121,7 @@ def main(cfg: DictConfig) -> float:
     results = run_pipeline(
         system=system,
         cfg=cfg,
+        output_dir=output_dir,
     )
 
     # Print final metrics

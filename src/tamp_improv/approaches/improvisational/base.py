@@ -208,6 +208,13 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         self.observed_states[initial_node.id] = []
         self.observed_states[initial_node.id].append(obs)
 
+        # Always set node/atom fields so diagnostics are correct even on early exit
+        self.initial_node_id = initial_node.id
+        self.initial_node_atoms = sorted(str(a) for a in initial_node.atoms)
+        goal_nodes = [n for n in self.planning_graph.nodes if goal.issubset(n.atoms)]
+        self.goal_node_ids = [n.id for n in goal_nodes]
+        self.goal_node_atoms_list = [sorted(str(a) for a in n.atoms) for n in goal_nodes]
+
         # Check if already at goal
         if goal.issubset(atoms):
             # Already at goal - episode immediately succeeds

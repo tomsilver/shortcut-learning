@@ -354,8 +354,16 @@ def run_evaluation_episode_with_caching(
         "reward": 0.0,
     }
 
-    print("First step result:", step_result)
-    print("Current path:", approach.current_path)
+    # Diagnostic: log episode setup
+    start_pos = _flatten_obs(obs)[:2]
+    init_atoms = episode_info.get("initial_node_atoms", [])
+    goal_atoms_list = episode_info.get("goal_node_atoms_list", [])
+    init_node = episode_info.get("initial_node")
+    goal_nodes = episode_info.get("goal_nodes")
+    print(f"[EVAL] Episode start: pos={start_pos}, node={init_node} atoms={init_atoms}")
+    print(f"[EVAL] Goal: nodes={goal_nodes} atoms={goal_atoms_list}")
+    print(f"[EVAL] First step result: terminate={step_result.terminate}, info={step_result.info}")
+    print(f"[EVAL] Current path: {approach.current_path}")
 
     trajectory_positions: list[list[float]] = [_flatten_obs(obs)]
 
@@ -364,11 +372,14 @@ def run_evaluation_episode_with_caching(
         # Check if it's "already at goal" (success) or "no path found" (failure)
         if step_result.info.get("already_at_goal", False):
             success = True
+            print(f"[EVAL] Already at goal — success")
         elif step_result.info.get("no_path_found", False):
             success = False
+            print(f"[EVAL] WARNING: No path found from node {init_node} ({init_atoms}) to {goal_nodes} ({goal_atoms_list})")
         else:
             # Other termination reasons - treat as failure
             success = False
+            print(f"[EVAL] WARNING: Unknown termination reason, info={step_result.info}")
         if config.render and can_render:
             cast(Any, system.env).close()
             system.env = recording_env
@@ -378,7 +389,7 @@ def run_evaluation_episode_with_caching(
         episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
 
-    best_edges = approach.current_path
+    best_edges = approach.best_eval_path
     if not best_edges:
         episode_info["success"] = success
         episode_info["true_steps"] = step_count

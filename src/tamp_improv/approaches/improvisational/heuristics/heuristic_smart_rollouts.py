@@ -101,7 +101,7 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         """Stub — pipeline calls train_one_round() directly."""
         return {}
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, **kwargs) -> dict[str, Any]:
         """Run random rollouts to populate distance estimates."""
         print(f"\nRunning smart rollouts:")
         print(f"  Rollouts per node: {self.config.num_rollouts_per_node}")
@@ -263,6 +263,12 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         L = self.estimate_node_distance(source_node, target_node)
         via_xy = d[:, source_node][:, None] + L + d[target_node, :][None, :]
         self.node_pair_graph_dists = np.minimum(d, via_xy)
+
+    def save(self, path: str) -> None:
+        pass
+
+    def load(self, path: str) -> None:
+        pass
 
     # ── Pruning ───────────────────────────────────────────────────────
 

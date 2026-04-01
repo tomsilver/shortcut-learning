@@ -404,7 +404,7 @@ class SACv2Heuristic(BaseHeuristic):
         """Stub — pipeline calls train_one_round() directly."""
         return {"critic_losses": [], "actor_losses": [], "buffer_size": 0}
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, **kwargs) -> dict[str, Any]:
         """Train for one round (multiple epochs)."""
         self.total_samples = 0
         self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))

@@ -483,7 +483,7 @@ class DQNv2Heuristic(BaseHeuristic):
     # Training
     # ------------------------------------------------------------------
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, **kwargs) -> dict[str, Any]:
         """Train for one round (manual epoch loop over model.learn calls).
 
         Returns:
