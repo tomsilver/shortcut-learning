@@ -1290,7 +1290,7 @@ def _log_distance_plots_to_wandb(
 
 
 def prune_with_heuristic(
-    heuristic: "BaseHeuristic", max_shortcuts: int | None
+    heuristic: "BaseHeuristic", max_shortcuts: int | None, use_multi_rl: bool = False
 ) -> GoalConditionedTrainingData:
     """Stage 3: Prune shortcuts using the heuristic.
 
@@ -1306,7 +1306,7 @@ def prune_with_heuristic(
     # print("=" * 80)
 
     # Call prune - interface is the same for all heuristics
-    pruned_data = heuristic.prune(max_shortcuts=max_shortcuts)
+    pruned_data = heuristic.prune(max_shortcuts=max_shortcuts, use_multi_rl=use_multi_rl)
 
     print(
         f"\nPruning complete: {len(pruned_data.unique_shortcuts)} unique shortcuts remaining"
@@ -1482,6 +1482,8 @@ def create_policy_dictionary(
     training_data: GoalConditionedTrainingData,
     cfg: DictConfig,
     use_multi_rl: bool,
+    system_cls: type | None = None,
+    system_kwargs: dict | None = None,
 ) -> dict[tuple[int, int], Policy[ObsType, ActType]]:
     """Create dictionary D mapping (source, target) pairs to policy wrappers.
 
@@ -1527,6 +1529,8 @@ def create_policy_dictionary(
             policy.train(
                 env=system.wrapped_env,
                 train_data=training_data,
+                system_cls=system_cls,
+                system_kwargs=system_kwargs if system_cls else None,
             )
             print("Policy training complete")
         else:
@@ -1999,6 +2003,8 @@ def run_pipeline(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
     cfg: DictConfig,
     output_dir: Path | None = None,
+    system_cls: type | None = None,
+    system_kwargs: dict | None = None,
 ) -> PipelineResults:
     """Run the complete SLAP pipeline.
 
@@ -2258,6 +2264,7 @@ def run_pipeline(
     pruned_training_data = prune_with_heuristic(
         heuristic=heuristic,
         max_shortcuts=cfg.heuristic.max_shortcuts_per_graph,
+        use_multi_rl=cfg.policy.use_multi_rl,
     )
     results.pruned_shortcuts = list(pruned_training_data.unique_shortcuts)
     times["heuristic_pruning_time"] = time.time() - start
@@ -2280,6 +2287,8 @@ def run_pipeline(
         training_data=pruned_training_data,
         cfg=cfg,
         use_multi_rl=use_multi_rl,
+        system_cls=system_cls,
+        system_kwargs=system_kwargs,
     )
     times["policy_training_time"] = time.time() - start
 

@@ -270,6 +270,17 @@ class SmartRolloutsHeuristic(BaseHeuristic):
     def load(self, path: str) -> None:
         pass
 
+    def estimate_probability(self, source_node: int, target_node: int) -> float:
+        """Estimate PPO success probability from empirical rollout success rate."""
+        if self._success_counts is None:
+            return 0.0
+        count = self._success_counts.get((source_node, target_node), 0)
+        n = self.config.num_rollouts_per_node
+        p_rr = count / n if n > 0 else 0.0
+        # Convert random rollout probability to PPO probability via step function
+        k = np.log(0.5) / np.log(1 - 0.05)  # threshold = 0.05
+        return 1 - (1 - p_rr)**k
+
     # ── Pruning ───────────────────────────────────────────────────────
 
     def prune_by_success(
@@ -316,13 +327,25 @@ class SmartRolloutsHeuristic(BaseHeuristic):
         for i in range(max_shortcuts):
             self._update_gains()
             gains = self.node_pair_gains[starts, ends]
-            best = int(np.argmax(gains))
+
+            # Weight gains by estimated PPO success probability
+            probs = np.zeros(len(starts))
+            for j, (s, t) in enumerate(zip(starts, ends)):
+                probs[j] = self.estimate_probability(int(s), int(t))
+
+            if np.any(probs > 0):
+                scores = probs * gains
+            else:
+                scores = gains  # Fall back to pure gain if all probabilities are 0
+
+            best = int(np.argmax(scores))
             src, tgt = int(starts[best]), int(ends[best])
+            p = probs[best]
             pruned_pairs.append((src, tgt))
             self._update_graph_distances(src, tgt)
             starts = np.delete(starts, best)
             ends = np.delete(ends, best)
-            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f})")
+            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f}, p_ppo={p:.2f}, score={scores[best]:.2f})")
 
         self.config.auto_dist_scale = prev_auto
         self.node_pair_gains = saved_gains

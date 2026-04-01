@@ -1027,7 +1027,17 @@ class DSACv2Heuristic(BaseHeuristic):
                 pruned_pairs.append((x, y))
         return self._build_pruned_data(pruned_pairs)
 
-    def prune(self, max_shortcuts: int) -> "GoalConditionedTrainingData":
+    def estimate_probability(self, source_node: int, target_node: int) -> float:
+        """Estimate PPO success probability from distance using Brownian motion argument."""
+        est_dist = self.estimate_node_distance(source_node, target_node)
+        if est_dist <= 0:
+            p_rr = 1.0
+        else:
+            p_rr = np.clip(np.exp(-est_dist**2 / (2 * self.config.max_episode_steps)), 0, 1)
+        k = np.log(0.5) / np.log(1 - 0.05)  # threshold = 0.05
+        return 1 - (1 - p_rr)**k
+
+    def prune(self, max_shortcuts: int, use_multi_rl: bool = False) -> "GoalConditionedTrainingData":
         print(f"\nPruning greedily to max_shortcuts={max_shortcuts}")
 
         print("Estimated distances for all shortcuts:")
@@ -1053,27 +1063,31 @@ class DSACv2Heuristic(BaseHeuristic):
             self._update_gains()
             gains = self.node_pair_gains[starts, ends]
 
-            # Weight gains by success rate (gated by num_reliability_trials)
-            k = self.config.num_reliability_trials
-            success_rates = np.zeros(len(starts))
-            for j, (s, t) in enumerate(zip(starts, ends)):
-                trials = self.node_pair_successes.get((int(s), int(t)), [])
-                if len(trials) >= k > 0:
-                    success_rates[j] = float(np.mean(trials))
-
-            if np.any(success_rates > 0):
-                scores = success_rates * gains
+            # Compute success probabilities
+            probs = np.zeros(len(starts))
+            if use_multi_rl:
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    probs[j] = self.estimate_probability(int(s), int(t))
             else:
-                scores = gains  # Fall back to pure gain if no pair has enough trials
+                k = self.config.num_reliability_trials
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    trials = self.node_pair_successes.get((int(s), int(t)), [])
+                    if len(trials) >= k > 0:
+                        probs[j] = float(np.mean(trials))
+
+            if np.any(probs > 0):
+                scores = probs * gains
+            else:
+                scores = gains
 
             best = int(np.argmax(scores))
             src, tgt = int(starts[best]), int(ends[best])
-            sr = success_rates[best]
+            p = probs[best]
             pruned_pairs.append((src, tgt))
             self._update_graph_distances(src, tgt)
             starts = np.delete(starts, best)
             ends = np.delete(ends, best)
-            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f}, success={sr:.0%}, score={scores[best]:.2f})")
+            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f}, p={p:.2f}, score={scores[best]:.2f})")
 
         self.config.auto_dist_scale = prev_auto
         self.node_pair_gains = curr_gains

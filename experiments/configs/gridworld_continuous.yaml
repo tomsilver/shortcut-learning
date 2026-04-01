@@ -48,7 +48,7 @@ heuristic:
     action_scale: 1.0
     success_threshold: 0.10
     gain_method: exact
-    auto_dist_scale: true
+    auto_dist_scale: false
     dist_scale: 1.0
     dist_quantile: 0.9
 

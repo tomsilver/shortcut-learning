@@ -113,7 +113,8 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         return self.policies[self._active_policy_key].get_action(obs)
 
     def train(
-        self, env: gym.Env, train_data: TrainingData | None, save_dir: str | None = None
+        self, env: gym.Env, train_data: TrainingData | None, save_dir: str | None = None,
+        system_cls: type | None = None, system_kwargs: dict | None = None,
     ) -> None:
         """Train multiple specialized policies."""
         assert train_data is not None
@@ -127,13 +128,21 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
 
         is_graph_based = hasattr(train_data.states[0], "nodes")
 
+        # Determine parallel vs sequential
+        import torch
+        max_workers = self.config.num_parallel_workers
+        use_parallel = max_workers > 0 and len(grouped_data) > 1
+
         policies_to_train = {}
+        env_factories = {}  # Only used for parallel path
         for policy_key, group_data in grouped_data.items():
             print(f"Training examples: {len(group_data.states)}")
 
             if policy_key not in self.policies:
                 self.policies[policy_key] = RLPolicy(self._seed, self.config)
 
+            relevant_objects = None
+            obs_space_shape = None
             if is_graph_based:
                 pattern = self._policy_patterns[policy_key]
                 relevant_objects = set()
@@ -150,64 +159,99 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
                         env.set_relevant_objects(relevant_objects)
                 self.base_env = self._get_base_env(env)
 
-                # Wrap the environment to use the right observation space
                 assert hasattr(self.base_env, "extract_relevant_object_features")
                 sample_state = group_data.states[0]
                 sample_features = self.base_env.extract_relevant_object_features(
                     sample_state, relevant_objects
                 )
-                custom_obs_space = Box(
-                    low=-np.inf,
-                    high=np.inf,
-                    shape=sample_features.shape,
-                    dtype=np.float32,
-                )
-                policy_env = copy.deepcopy(env)
-                policy_env.observation_space = custom_obs_space
-            else:
-                policy_env = copy.deepcopy(env)
+                obs_space_shape = sample_features.shape
 
-            self._configure_env_recursively(policy_env, group_data)
+            if use_parallel and system_cls is not None:
+                # Build a picklable factory for the worker to reconstruct the env
+                env_factories[policy_key] = EnvFactory(
+                    system_cls=system_cls,
+                    system_kwargs=system_kwargs or {},
+                    relevant_objects=relevant_objects,
+                    obs_space_shape=obs_space_shape,
+                    group_data=group_data,
+                )
+            else:
+                # Build env directly for sequential training
+                if obs_space_shape is not None:
+                    policy_env = copy.deepcopy(env)
+                    policy_env.observation_space = Box(
+                        low=-np.inf, high=np.inf, shape=obs_space_shape, dtype=np.float32,
+                    )
+                else:
+                    policy_env = copy.deepcopy(env)
+                self._configure_env_recursively(policy_env, group_data)
 
             policies_to_train[policy_key] = (
                 self.policies[policy_key],
-                policy_env,
                 group_data,
             )
 
-        # Use parallel training if num_parallel_workers > 0, else sequential
-        import torch
-        max_workers = self.config.num_parallel_workers
-        if max_workers > 0:
-            num_parallel_workers = min(len(policies_to_train), max_workers)
-        else:
-            num_parallel_workers = 1  # sequential
-        if num_parallel_workers > 1:
-            from tamp_improv.utils.gpu_parallel import GPUParallelTrainer
-            use_cuda = torch.cuda.is_available()
-            print(f"\nUsing parallel training with {num_parallel_workers} workers"
-                  f"{f' on {torch.cuda.device_count()} GPU(s)' if use_cuda else ' (CPU)'}")
-            trainer = GPUParallelTrainer(num_workers=num_parallel_workers, use_cuda=use_cuda)
-            # Workers save models to disk; main process loads them back
+        num_parallel_workers = min(len(policies_to_train), max_workers) if use_parallel else 1
+        if num_parallel_workers > 1 and env_factories:
             import tempfile
+            import torch.multiprocessing as mp
+            try:
+                mp.set_start_method("spawn")
+            except RuntimeError:
+                pass
+
             parallel_save_dir = save_dir or tempfile.mkdtemp(prefix="parallel_ppo_")
-            results = trainer.train_policies(
-                policies_to_train, train_single_policy, save_dir=parallel_save_dir
-            )
-            for policy_key, result in results.items():
-                if isinstance(result, dict) and result.get("saved_path"):
-                    self.policies[policy_key].load(result["saved_path"])
-                    print(f"  Loaded parallel-trained model for {policy_key}")
-                else:
-                    print(f"  WARNING: No saved model for {policy_key}, result={result}")
-            trainer.close()
+            print(f"\nUsing parallel training with {num_parallel_workers} workers")
+
+            with mp.Pool(num_parallel_workers) as pool:
+                async_results = []
+                for policy_key, (policy, group_data) in policies_to_train.items():
+                    factory = env_factories[policy_key]
+                    ar = pool.apply_async(
+                        _train_policy_in_process,
+                        (policy, factory, group_data, policy_key, parallel_save_dir),
+                    )
+                    async_results.append((policy_key, ar))
+
+                for policy_key, ar in async_results:
+                    try:
+                        result = ar.get()
+                        if isinstance(result, dict) and result.get("saved_path"):
+                            self.policies[policy_key].load(result["saved_path"])
+                            print(f"  Loaded parallel-trained model for {policy_key}")
+                        else:
+                            print(f"  WARNING: No saved model for {policy_key}, result={result}")
+                    except Exception as e:
+                        print(f"  ERROR training {policy_key}: {e}")
         else:
             print("\nTraining policies sequentially")
             for policy_key, (
                 policy,
-                policy_env,
                 group_data,
             ) in policies_to_train.items():
+                # Build env for this policy (sequential — can use deepcopy safely)
+                obs_shape = None
+                if is_graph_based:
+                    pattern = self._policy_patterns[policy_key]
+                    rel_objs = set()
+                    for atom in pattern.get("added_atoms", set()).union(
+                        pattern.get("deleted_atoms", set())
+                    ):
+                        for obj in atom.objects:
+                            rel_objs.add(obj.name)
+                    base = self._get_base_env(env)
+                    sample_feats = base.extract_relevant_object_features(
+                        group_data.states[0], rel_objs
+                    )
+                    obs_shape = sample_feats.shape
+
+                policy_env = copy.deepcopy(env)
+                if obs_shape is not None:
+                    policy_env.observation_space = Box(
+                        low=-np.inf, high=np.inf, shape=obs_shape, dtype=np.float32,
+                    )
+                self._configure_env_recursively(policy_env, group_data)
+
                 print(f"\nTraining policy for shortcut type: {policy_key}")
                 result = train_single_policy(
                     policy, policy_env, group_data, policy_key=policy_key, save_dir=save_dir
@@ -429,6 +473,83 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         print(f"Loaded {len(self.policies)} specialized policies")
 
 
+class EnvFactory:
+    """Picklable factory that reconstructs a training environment in a worker process."""
+
+    def __init__(
+        self,
+        system_cls: type,
+        system_kwargs: dict,
+        relevant_objects: set[str] | None,
+        obs_space_shape: tuple | None,
+        group_data: TrainingData,
+    ):
+        self.system_cls = system_cls
+        self.system_kwargs = system_kwargs
+        self.relevant_objects = relevant_objects
+        self.obs_space_shape = obs_space_shape
+        self.group_data = group_data
+
+    def __call__(self) -> gym.Env:
+        """Create a fresh environment in the current process."""
+        import inspect
+        create_fn = self.system_cls.create_default
+        sig = inspect.signature(create_fn)
+        valid_params = sig.parameters
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in valid_params.values()):
+            filtered = self.system_kwargs
+        else:
+            filtered = {k: v for k, v in self.system_kwargs.items() if k in valid_params}
+        system = create_fn(**filtered)
+        env = system.wrapped_env
+
+        if self.relevant_objects is not None and hasattr(env, "set_relevant_objects"):
+            env.set_relevant_objects(self.relevant_objects)
+
+        if self.obs_space_shape is not None:
+            env.observation_space = Box(
+                low=-np.inf, high=np.inf, shape=self.obs_space_shape, dtype=np.float32,
+            )
+
+        # Configure training data on the env
+        current = env
+        while current is not None:
+            if hasattr(current, "configure_training"):
+                current.configure_training(self.group_data)
+            current = getattr(current, "env", None)
+
+        return env
+
+
+def _train_policy_in_process(
+    policy: RLPolicy,
+    env_factory: "EnvFactory",
+    train_data: TrainingData,
+    policy_key: str,
+    save_dir: str | None = None,
+):
+    """Train a single policy in a worker process, reconstructing the env from factory."""
+    import os, torch
+    env = env_factory()
+    callback = TrainingProgressCallback(
+        check_freq=policy.config.training_record_interval,
+        early_stopping=policy.config.early_stopping,
+        early_stopping_patience=policy.config.early_stopping_patience,
+        early_stopping_threshold=0.8,
+        policy_key=policy_key,
+    )
+    policy.train(env, train_data, callback=callback)
+
+    # Save model so main process can load it
+    if save_dir and hasattr(policy, "model") and policy.model is not None:
+        safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in policy_key)
+        save_path = os.path.join(save_dir, f"policy_{safe_key}")
+        os.makedirs(save_dir, exist_ok=True)
+        policy.model.save(save_path)
+        return {"success": True, "saved_path": save_path}
+    return {"success": True}
+
+
 def train_single_policy(
     policy: RLPolicy,
     env: gym.Env,
@@ -436,7 +557,7 @@ def train_single_policy(
     policy_key: str | None = None,
     save_dir: str | None = None,
 ):
-    """Train a single policy with a callback."""
+    """Train a single policy with a callback (sequential path)."""
     checkpoint_dir = None
     if save_dir:
         checkpoint_dir = str(Path(save_dir) / "checkpoints")

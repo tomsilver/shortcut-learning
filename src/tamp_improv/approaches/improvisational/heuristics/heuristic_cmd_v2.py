@@ -1233,7 +1233,17 @@ class CMDv2Heuristic(BaseHeuristic):
 
         
     
-    def prune(self, max_shortcuts: int) -> GoalConditionedTrainingData:
+    def estimate_probability(self, source_node: int, target_node: int) -> float:
+        """Estimate PPO success probability from distance using Brownian motion argument."""
+        est_dist = self.estimate_node_distance(source_node, target_node)
+        if est_dist <= 0:
+            p_rr = 1.0
+        else:
+            p_rr = np.clip(np.exp(-est_dist**2 / (2 * self.config.max_episode_steps)), 0, 1)
+        k = np.log(0.5) / np.log(1 - 0.05)  # threshold = 0.05
+        return 1 - (1 - p_rr)**k
+
+    def prune(self, max_shortcuts: int, use_multi_rl: bool = False) -> GoalConditionedTrainingData:
 
         print(f"\n[DEBUG] Pruning greedily to max_shortcuts={max_shortcuts}")
 
@@ -1245,12 +1255,11 @@ class CMDv2Heuristic(BaseHeuristic):
         if max_shortcuts is None or max_shortcuts >= len(self.training_data.unique_shortcuts):
             return self.training_data
 
-        # Reshape self.training_data.unique_shortcuts
         starts = np.array([x for (x, _) in self.training_data.unique_shortcuts])
         ends = np.array([y for (_, y) in self.training_data.unique_shortcuts])
-        
+
         curr_gains = self.node_pair_gains.copy()
-        curr_dists = self.node_pair_graph_dists.copy()  # post-graduation dists to restore
+        curr_dists = self.node_pair_graph_dists.copy()
         self.node_pair_graph_dists = self.original_node_pair_graph_dists.copy()
 
         pruned_pairs = []
@@ -1260,37 +1269,36 @@ class CMDv2Heuristic(BaseHeuristic):
 
         for i in range(max_shortcuts):
             self._update_gains()
-
-            # Take maximum gain shortcut using node_pairs as indices into self.node_pair_gains
             gains = self.node_pair_gains[starts, ends]
 
-            # Weight gains by success rate (gated by num_reliability_trials)
-            k = self.config.num_reliability_trials
-            success_rates = np.zeros(len(starts))
-            for j, (s, t) in enumerate(zip(starts, ends)):
-                trials = self.node_pair_successes.get((int(s), int(t)), [])
-                if len(trials) >= k > 0:
-                    success_rates[j] = float(np.mean(trials))
-
-            if np.any(success_rates > 0):
-                scores = success_rates * gains
+            probs = np.zeros(len(starts))
+            if use_multi_rl:
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    probs[j] = self.estimate_probability(int(s), int(t))
             else:
-                scores = gains  # Fall back to pure gain if no pair has enough trials
+                k = self.config.num_reliability_trials
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    trials = self.node_pair_successes.get((int(s), int(t)), [])
+                    if len(trials) >= k > 0:
+                        probs[j] = float(np.mean(trials))
+
+            if np.any(probs > 0):
+                scores = probs * gains
+            else:
+                scores = gains
 
             max_idx = np.argmax(scores)
             source_id = starts[max_idx]
             target_id = ends[max_idx]
-            sr = success_rates[max_idx]
+            p = probs[max_idx]
             pruned_pairs.append((source_id, target_id))
 
-            # Update graph distances
             self._update_graph_distances(source_id, target_id)
 
-            # Remove this pair from consideration
             starts = np.delete(starts, max_idx)
             ends = np.delete(ends, max_idx)
 
-            print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} (gain={gains[max_idx]:.2f}, success={sr:.0%}, score={scores[max_idx]:.2f})")
+            print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} (gain={gains[max_idx]:.2f}, p={p:.2f}, score={scores[max_idx]:.2f})")
         
         self.config.auto_dist_scale = prev_auto
         self.node_pair_gains = curr_gains

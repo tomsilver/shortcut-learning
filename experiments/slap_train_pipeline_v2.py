@@ -122,6 +122,8 @@ def main(cfg: DictConfig) -> float:
         system=system,
         cfg=cfg,
         output_dir=output_dir,
+        system_cls=system_cls,
+        system_kwargs=filtered_kwargs,
     )
 
     # Print final metrics

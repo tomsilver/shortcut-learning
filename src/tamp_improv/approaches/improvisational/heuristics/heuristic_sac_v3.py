@@ -821,7 +821,7 @@ class SACv2Heuristic(BaseHeuristic):
                 pruned_pairs.append((x, y))
         return self._build_pruned_data(pruned_pairs)
 
-    def prune(self, max_shortcuts: int) -> "GoalConditionedTrainingData":
+    def prune(self, max_shortcuts: int, **kwargs) -> "GoalConditionedTrainingData":
         print(f"\nPruning greedily to max_shortcuts={max_shortcuts}")
 
         print("Estimated distances for all shortcuts:")
