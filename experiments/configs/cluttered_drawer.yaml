@@ -2,6 +2,7 @@ seed: 42
 debug: false
 render_mode: null
 eval_heuristic_only: false
+resume_from: null
 wandb_enabled: false
 
 env:
@@ -47,7 +48,7 @@ heuristic:
     action_scale: 0.005
     success_threshold: 0.05
     gain_method: exact
-    auto_dist_scale: true
+    auto_dist_scale: false
     dist_scale: 1.0
     dist_quantile: 0.9
 
@@ -65,7 +66,7 @@ heuristic:
     iters_per_epoch: 10
     learn_frequency: 1
     gain_update_frequency: 100
-    medoid_update_frequency: 10
+    medoid_update_frequency: 100
     node_distance_samples: 5
 
     num_epochs_per_round: 1700  # Epochs per round (used as num_epochs_per_round in multi_train)
@@ -88,7 +89,7 @@ heuristic:
     auto_dist_scale: true  # Whether to automatically set dist_scale based on quantile
     residualize: false  # Whether to residualize actor actions with base skill actions
 
-    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+    num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
   # SAC V2 heuristic parameters
   sac:
@@ -110,7 +111,7 @@ heuristic:
     max_episode_steps: 500
     learn_frequency: 1
     gain_update_frequency: 100
-    medoid_update_frequency: 10
+    medoid_update_frequency: 100
     iters_per_epoch: 100
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -130,7 +131,7 @@ heuristic:
     residualize: false
     max_atom_size: 72
 
-    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+    num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
 # M = 400 * 10 * 10 = 40000
 policy:
@@ -138,8 +139,8 @@ policy:
 
   type: multiRL
   learning_rate: 3.0e-4
-  batch_size: 400
-  n_envs: 16
+  batch_size: 16
+  n_envs: 1
   n_epochs: 10
   gamma: 0.99
   ent_coef: 0.01
@@ -149,6 +150,8 @@ policy:
   max_episode_steps: 500
   episodes_per_scenario: 400
   training_record_interval: 100
+
+  num_parallel_workers: 0
 
   eval_rollouts: 10
 

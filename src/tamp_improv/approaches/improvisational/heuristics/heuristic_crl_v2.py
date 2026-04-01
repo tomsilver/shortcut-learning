@@ -107,7 +107,7 @@ class CRLV2HeuristicConfig:
     iters_per_epoch: int = 1  # Gradient steps per training call
     learn_frequency: int = 10  # Learn every N epochs
     gain_update_frequency: int = 10  # Update UCB gains every N epochs
-    node_distance_samples: int = 5  # States to average over in estimate_node_distance
+    node_distance_samples: int = 10  # States to average over in estimate_node_distance
     num_epochs_per_round: int = 200
     trajectories_per_epoch: int = 10
     max_episode_steps: int = 100
@@ -335,6 +335,7 @@ class CRLv2Heuristic(BaseHeuristic):
             self.valid_pairs_mask[i, j] = True
 
         self.node_pair_successes = {}
+        self._graduation_cooldown: dict[tuple[int, int], int] = {}
         for (i, j) in self.valid_pairs:
             # Buffer of size k for each node pair to track recent success/failure outcomes
             k = self.config.num_reliability_trials
@@ -570,7 +571,7 @@ class CRLv2Heuristic(BaseHeuristic):
             "buffer_size": 0,
         }
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, checkpoint_callback: Any = None) -> dict[str, Any]:
         """Train for one round (multiple epochs with rollouts).
 
         Returns:
@@ -620,6 +621,9 @@ class CRLv2Heuristic(BaseHeuristic):
                     f"Critic loss: {critic_loss_str} | "
                     f"Actor loss: {actor_loss_str}"
                 )
+
+            if checkpoint_callback is not None and (epoch + 1) % 100 == 0:
+                checkpoint_callback()
 
         self._update_gains()
 
@@ -735,7 +739,7 @@ class CRLv2Heuristic(BaseHeuristic):
         )
         if edge is not None:
             operator = edge.operator
-            skills = [s for s in self.system.skills if s.can_execute(operator)]
+            skills = [s for s in self.virtual_system.skills if s.can_execute(operator)]
             if skills:
                 skill = skills[0]
                 skill.reset(operator)
@@ -779,7 +783,7 @@ class CRLv2Heuristic(BaseHeuristic):
             if edge is None:
                 continue
             operator = edge.operator
-            skills = [s for s in self.system.skills if s.can_execute(operator)]
+            skills = [s for s in self.virtual_system.skills if s.can_execute(operator)]
             if not skills:
                 continue
             skill = skills[0]
@@ -1129,7 +1133,17 @@ class CRLv2Heuristic(BaseHeuristic):
             },
         )
 
-    def prune(self, max_shortcuts: int) -> GoalConditionedTrainingData:
+    def estimate_probability(self, source_node: int, target_node: int) -> float:
+        """Estimate PPO success probability from distance using Brownian motion argument."""
+        est_dist = self.estimate_node_distance(source_node, target_node)
+        if est_dist <= 0:
+            p_rr = 1.0
+        else:
+            p_rr = np.clip(np.exp(-est_dist**2 / (2 * self.config.max_episode_steps)), 0, 1)
+        k = np.log(0.5) / np.log(1 - 0.05)  # threshold = 0.05
+        return 1 - (1 - p_rr)**k
+
+    def prune(self, max_shortcuts: int, use_multi_rl: bool = False) -> GoalConditionedTrainingData:
 
         print(f"\n[DEBUG] Pruning greedily to max_shortcuts={max_shortcuts}")
 
@@ -1141,12 +1155,12 @@ class CRLv2Heuristic(BaseHeuristic):
         if max_shortcuts is None or max_shortcuts >= len(self.training_data.unique_shortcuts):
             return self.training_data
 
-        # Reshape self.training_data.unique_shortcuts
         starts = np.array([x for (x, _) in self.training_data.unique_shortcuts])
         ends = np.array([y for (_, y) in self.training_data.unique_shortcuts])
 
         curr_gains = self.node_pair_gains.copy()
         curr_dists = self.node_pair_graph_dists.copy()
+        self.node_pair_graph_dists = self.original_node_pair_graph_dists.copy()
 
         pruned_pairs = []
 
@@ -1154,22 +1168,36 @@ class CRLv2Heuristic(BaseHeuristic):
 
         for i in range(max_shortcuts):
             self._update_gains()
-
-            # Take maximum gain shortcut using node_pairs as indices into self.node_pair_gains
             gains = self.node_pair_gains[starts, ends]
-            max_idx = np.argmax(gains)
+
+            probs = np.zeros(len(starts))
+            if use_multi_rl:
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    probs[j] = self.estimate_probability(int(s), int(t))
+            else:
+                k = self.config.num_reliability_trials
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    trials = self.node_pair_successes.get((int(s), int(t)), [])
+                    if len(trials) >= k > 0:
+                        probs[j] = float(np.mean(trials))
+
+            if np.any(probs > 0):
+                scores = probs * gains
+            else:
+                scores = gains
+
+            max_idx = np.argmax(scores)
             source_id = starts[max_idx]
             target_id = ends[max_idx]
+            p = probs[max_idx]
             pruned_pairs.append((source_id, target_id))
 
-            # Update graph distances
             self._update_graph_distances(source_id, target_id)
 
-            # Remove this pair from consideration
             starts = np.delete(starts, max_idx)
             ends = np.delete(ends, max_idx)
 
-            print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} with gain {gains[max_idx]:.2f}")
+            print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} (gain={gains[max_idx]:.2f}, p={p:.2f}, score={scores[max_idx]:.2f})")
 
         self.config.auto_dist_scale = True
         self.node_pair_gains = curr_gains
@@ -1354,6 +1382,7 @@ class CRLv2Heuristic(BaseHeuristic):
         self,
         graduate_fn: Any = None,
         success_threshold: float = 0.9,
+        checkpoint_callback: Any = None,
     ) -> dict[str, Any]:
         """Train with continuous graduation: graduate pairs online as they become reliable.
 
@@ -1383,17 +1412,20 @@ class CRLv2Heuristic(BaseHeuristic):
                 self.replay_buffer.add_trajectory(trajectory)
 
                 # Check if this pair just crossed the graduation threshold
-                successes = self.node_pair_successes.get((source_id, target_id), [])
-                k = self.config.num_reliability_trials
-                if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
-                    print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
-                    if graduate_fn is not None:
-                        graduate_fn(self, source_id, target_id)
-                    self._update_graph_distances(source_id, target_id)
-                    self._update_first_edge_dict(source_id, target_id)
-                    self._update_gains()
-                    # Clear success record so the pair must re-earn graduation before re-adding
-                    self.node_pair_successes[(source_id, target_id)].clear()
+                pair = (source_id, target_id)
+                if self._graduation_cooldown.get(pair, 0) > 0:
+                    self._graduation_cooldown[pair] -= 1
+                else:
+                    successes = self.node_pair_successes.get(pair, [])
+                    k = self.config.num_reliability_trials
+                    if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
+                        print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
+                        if graduate_fn is not None:
+                            graduate_fn(self, source_id, target_id)
+                        self._update_graph_distances(source_id, target_id)
+                        self._update_first_edge_dict(source_id, target_id)
+                        self._update_gains()
+                        self._graduation_cooldown[pair] = k
 
             if (epoch + 1) % self.config.learn_frequency == 0:
                 if len(self.replay_buffer) >= self.config.batch_size:
@@ -1414,6 +1446,9 @@ class CRLv2Heuristic(BaseHeuristic):
                     f"Critic loss: {critic_loss_str} | "
                     f"Actor loss: {actor_loss_str}"
                 )
+
+            if checkpoint_callback is not None and (epoch + 1) % 100 == 0:
+                checkpoint_callback()
 
         self._update_gains()
 

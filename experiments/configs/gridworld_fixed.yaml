@@ -2,6 +2,7 @@ seed: 42
 debug: true
 render_mode: null
 eval_heuristic_only: false
+resume_from: null
 wandb_enabled: false
 
 env:

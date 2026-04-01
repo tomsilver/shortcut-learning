@@ -11,6 +11,7 @@ from typing import Any, TypeVar
 
 import gymnasium as gym
 import numpy as np
+import torch
 from gymnasium.spaces import Box
 from gymnasium.wrappers import RecordVideo
 from relational_structs import GroundAtom, Object, Predicate
@@ -25,6 +26,7 @@ from tamp_improv.approaches.improvisational.policies.rl import (
     RLPolicy,
     TrainingProgressCallback,
 )
+from tamp_improv.utils.gpu_parallel import GPUParallelTrainer
 
 ObsType = TypeVar("ObsType")
 ActType = TypeVar("ActType")
@@ -34,24 +36,23 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
     """Policy that uses multiple specialized RL policies for different
     shortcuts."""
 
-    def __init__(
-        self,
-        seed: int,
-        config: RLConfig | None = None,
-        enable_generalization: bool = False,
-    ) -> None:
+    def __init__(self, seed: int, config: RLConfig | None = None) -> None:
         """Initialize with a seed and optional config."""
         super().__init__(seed)
         self.env: gym.Env
         self.base_env: gym.Env
         self.config = config or RLConfig()
-        self.enable_generalization = enable_generalization
         self.policies: dict[str, RLPolicy] = {}
         self._active_policy_key: str | None = None
         self._current_context: PolicyContext | None = None
         self._policy_patterns: dict[str, dict[str, set[GroundAtom]]] = {}
         self._current_substitution: dict[Object, Object] | None = None
         self._saved_models: dict[str, str] = {}
+
+    @property
+    def requires_training(self) -> bool:
+        """Whether this policy requires training."""
+        return True
 
     def initialize(self, env: gym.Env) -> None:
         """Initialize the policy."""
@@ -72,13 +73,7 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         """Check if we can handle the current context."""
         if not self._current_context:
             return False
-        matching_policy = self._find_matching_policy(self._current_context)
-        if matching_policy is None:
-            # Debug: show what key we're looking for vs what's available
-            key = self._get_policy_key(self._current_context)
-            # print(f"    DEBUG can_initiate: Looking for key '{key}'")
-            # print(f"    DEBUG can_initiate: Available keys ({len(self.policies)}): {list(self.policies.keys())}")
-        return matching_policy is not None
+        return self._find_matching_policy(self._current_context) is not None
 
     def get_action(self, obs: ObsType) -> ActType:
         """Get action from the appropriate policy with selective feature
@@ -113,36 +108,32 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         return self.policies[self._active_policy_key].get_action(obs)
 
     def train(
-        self, env: gym.Env, train_data: TrainingData | None, save_dir: str | None = None,
-        system_cls: type | None = None, system_kwargs: dict | None = None,
+        self, env: gym.Env, train_data: TrainingData | None, save_dir: str | None = None
     ) -> None:
         """Train multiple specialized policies."""
         assert train_data is not None
         print("\n=== Training Multi-Policy RL ===")
         print(f"Total training examples: {len(train_data.states)}")
-        if len(train_data.states) == 0:
-            print("No training data provided, skipping training.")
-            return
 
+        # Group training data by shortcut signature
         grouped_data = self._group_training_data(train_data)
 
+        # Check if we're dealing with graph observations
         is_graph_based = hasattr(train_data.states[0], "nodes")
+        if is_graph_based:
+            print(
+                "Detected graph-based observations - will extract fixed-size vectors for each policy"  # pylint:disable=line-too-long
+            )
 
-        # Determine parallel vs sequential
-        import torch
-        max_workers = self.config.num_parallel_workers
-        use_parallel = max_workers > 0 and len(grouped_data) > 1
-
+        # Train a policy for each group
         policies_to_train = {}
-        env_factories = {}  # Only used for parallel path
         for policy_key, group_data in grouped_data.items():
             print(f"Training examples: {len(group_data.states)}")
 
             if policy_key not in self.policies:
                 self.policies[policy_key] = RLPolicy(self._seed, self.config)
 
-            relevant_objects = None
-            obs_space_shape = None
+            # For graph observations, process the training data to extract fixed vectors
             if is_graph_based:
                 pattern = self._policy_patterns[policy_key]
                 relevant_objects = set()
@@ -157,122 +148,84 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
                 else:
                     if hasattr(env, "set_relevant_objects"):
                         env.set_relevant_objects(relevant_objects)
-                self.base_env = self._get_base_env(env)
+                base_env = self._get_base_env(env)
 
-                assert hasattr(self.base_env, "extract_relevant_object_features")
+                # Wrap the environment to use the right observation space
+                assert hasattr(base_env, "extract_relevant_object_features")
                 sample_state = group_data.states[0]
-                sample_features = self.base_env.extract_relevant_object_features(
+                sample_features = base_env.extract_relevant_object_features(
                     sample_state, relevant_objects
                 )
-                obs_space_shape = sample_features.shape
-
-            if use_parallel and system_cls is not None:
-                # Build a picklable factory for the worker to reconstruct the env
-                env_factories[policy_key] = EnvFactory(
-                    system_cls=system_cls,
-                    system_kwargs=system_kwargs or {},
-                    relevant_objects=relevant_objects,
-                    obs_space_shape=obs_space_shape,
-                    group_data=group_data,
+                custom_obs_space = Box(
+                    low=-np.inf,
+                    high=np.inf,
+                    shape=sample_features.shape,
+                    dtype=np.float32,
                 )
+                policy_env = copy.deepcopy(env)
+                policy_env.observation_space = custom_obs_space
             else:
-                # Build env directly for sequential training
-                if obs_space_shape is not None:
-                    policy_env = copy.deepcopy(env)
-                    policy_env.observation_space = Box(
-                        low=-np.inf, high=np.inf, shape=obs_space_shape, dtype=np.float32,
-                    )
-                else:
-                    policy_env = copy.deepcopy(env)
-                self._configure_env_recursively(policy_env, group_data)
+                policy_env = copy.deepcopy(env)
 
+            self._configure_env_recursively(policy_env, group_data)
+
+            # Store policy, env, and data for parallel training
             policies_to_train[policy_key] = (
                 self.policies[policy_key],
+                policy_env,
                 group_data,
             )
 
-        num_parallel_workers = min(len(policies_to_train), max_workers) if use_parallel else 1
-        if num_parallel_workers > 1 and env_factories:
-            import tempfile
-            import torch.multiprocessing as mp
-            try:
-                mp.set_start_method("spawn")
-            except RuntimeError:
-                pass
-
-            parallel_save_dir = save_dir or tempfile.mkdtemp(prefix="parallel_ppo_")
-            print(f"\nUsing parallel training with {num_parallel_workers} workers")
-
-            with mp.Pool(num_parallel_workers) as pool:
-                async_results = []
-                for policy_key, (policy, group_data) in policies_to_train.items():
-                    factory = env_factories[policy_key]
-                    ar = pool.apply_async(
-                        _train_policy_in_process,
-                        (policy, factory, group_data, policy_key, parallel_save_dir),
-                    )
-                    async_results.append((policy_key, ar))
-
-                for policy_key, ar in async_results:
-                    try:
-                        result = ar.get()
-                        if isinstance(result, dict) and result.get("saved_path"):
-                            self.policies[policy_key].load(result["saved_path"])
-                            print(f"  Loaded parallel-trained model for {policy_key}")
-                        else:
-                            print(f"  WARNING: No saved model for {policy_key}, result={result}")
-                    except Exception as e:
-                        print(f"  ERROR training {policy_key}: {e}")
+        if (
+            len(policies_to_train) > 1
+            and torch.cuda.is_available()
+            and torch.cuda.device_count() > 1
+        ):
+            print(f"\nUsing parallel training with {torch.cuda.device_count()} GPUs")
+            trainer: GPUParallelTrainer = GPUParallelTrainer(use_cuda=True)
+            train_kwargs = {}
+            if save_dir:
+                train_kwargs["save_dir"] = save_dir
+            results = trainer.train_policies(
+                policies_to_train, train_single_policy, **train_kwargs
+            )
+            saved_models = {}
+            for policy_key, result in results.items():
+                if isinstance(result, dict) and result.get("saved_path"):
+                    saved_models[policy_key] = result["saved_path"]
+            trainer.close()
+            self._saved_models = saved_models
         else:
+            # Train sequentially
             print("\nTraining policies sequentially")
             for policy_key, (
                 policy,
+                policy_env,
                 group_data,
             ) in policies_to_train.items():
-                # Build env for this policy (sequential — can use deepcopy safely)
-                obs_shape = None
-                if is_graph_based:
-                    pattern = self._policy_patterns[policy_key]
-                    rel_objs = set()
-                    for atom in pattern.get("added_atoms", set()).union(
-                        pattern.get("deleted_atoms", set())
-                    ):
-                        for obj in atom.objects:
-                            rel_objs.add(obj.name)
-                    base = self._get_base_env(env)
-                    sample_feats = base.extract_relevant_object_features(
-                        group_data.states[0], rel_objs
-                    )
-                    obs_shape = sample_feats.shape
-
-                policy_env = copy.deepcopy(env)
-                if obs_shape is not None:
-                    policy_env.observation_space = Box(
-                        low=-np.inf, high=np.inf, shape=obs_shape, dtype=np.float32,
-                    )
-                self._configure_env_recursively(policy_env, group_data)
-
                 print(f"\nTraining policy for shortcut type: {policy_key}")
-                result = train_single_policy(
-                    policy, policy_env, group_data, policy_key=policy_key, save_dir=save_dir
+                train_single_policy(
+                    policy, policy_env, group_data, policy_key=policy_key
                 )
-                if isinstance(result, dict) and result.get("best_checkpoint"):
-                    best_checkpoint_path = result["best_checkpoint"]
-                    if best_checkpoint_path:
-                        policy.load(best_checkpoint_path)
 
         print(f"\nCompleted training {len(self.policies)} specialized policies")
 
     def _get_policy_key(self, context: PolicyContext) -> str:
         """Create a unique key for a policy based on the context."""
+        # Get ground atoms as strings to preserve object information
         source_atoms_str = sorted([str(atom) for atom in context.current_atoms])
         target_atoms_str = sorted([str(atom) for atom in context.goal_atoms])
+
+        # Create hash of the source and target atoms
         source_hash = hashlib.md5("|".join(source_atoms_str).encode()).hexdigest()[:8]
         target_hash = hashlib.md5("|".join(target_atoms_str).encode()).hexdigest()[:8]
+
+        # Include source and target node IDs if available
         source_id = context.info.get("source_node_id", "")
         target_id = context.info.get("target_node_id", "")
-        # if source_id != "" and target_id != "":
-        #     return f"n{source_id}-to-n{target_id}_{source_hash}_{target_hash}"
+
+        if source_id != "" and target_id != "":
+            return f"n{source_id}-to-n{target_id}_{source_hash}_{target_hash}"
         return f"{source_hash}_{target_hash}"
 
     def _find_matching_policy(self, context: PolicyContext) -> str | None:
@@ -282,6 +235,7 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         added_atoms = target_atoms - source_atoms
         deleted_atoms = source_atoms - target_atoms
 
+        # Transform atoms to explicitly mark additions and deletions
         transformed_test_atoms = set()
         for atom in added_atoms:
             transformed_test_atoms.add(self._transform_atom(atom, "ADD"))
@@ -301,35 +255,30 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
             self._current_substitution = {obj: obj for obj in relevant_objects}
             return key
 
-        # Try structural matching if enabled
-        if self.enable_generalization:
-            for policy_key, pattern_info in self._policy_patterns.items():
-                transformed_train_atoms = set()
-                if "transformed_atoms" in pattern_info:
-                    transformed_train_atoms = pattern_info["transformed_atoms"]
-                else:
-                    for atom in pattern_info["added_atoms"]:
-                        transformed_train_atoms.add(self._transform_atom(atom, "ADD"))
-                    for atom in pattern_info["deleted_atoms"]:
-                        transformed_train_atoms.add(self._transform_atom(atom, "DEL"))
+        # Try structural matching
+        for policy_key, pattern_info in self._policy_patterns.items():
+            transformed_train_atoms = set()
+            if "transformed_atoms" in pattern_info:
+                transformed_train_atoms = pattern_info["transformed_atoms"]
+            else:
+                for atom in pattern_info["added_atoms"]:
+                    transformed_train_atoms.add(self._transform_atom(atom, "ADD"))
+                for atom in pattern_info["deleted_atoms"]:
+                    transformed_train_atoms.add(self._transform_atom(atom, "DEL"))
 
-                # Check predicate subsets with transformed predicates
-                train_predicates = {
-                    atom.predicate.name for atom in transformed_train_atoms
-                }
-                test_predicates = {
-                    atom.predicate.name for atom in transformed_test_atoms
-                }
-                if not train_predicates.issubset(test_predicates):
-                    continue
+            # Check predicate subsets with transformed predicates
+            train_predicates = {atom.predicate.name for atom in transformed_train_atoms}
+            test_predicates = {atom.predicate.name for atom in transformed_test_atoms}
+            if not train_predicates.issubset(test_predicates):
+                continue
 
-                # Find substitution
-                match_found, substitution = find_atom_substitution(
-                    transformed_train_atoms, transformed_test_atoms, self.base_env
-                )
-                if match_found:
-                    self._current_substitution = substitution
-                    return policy_key
+            # Find substitution
+            match_found, substitution = find_atom_substitution(
+                transformed_train_atoms, transformed_test_atoms, self.base_env
+            )
+            if match_found:
+                self._current_substitution = substitution
+                return policy_key
 
         return None
 
@@ -353,6 +302,7 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
             if i < len(shortcut_info):
                 info = shortcut_info[i]
 
+            # Create a context and get policy key
             context: PolicyContext[ObsType, ActType] = PolicyContext(
                 current_atoms=current_atoms, goal_atoms=goal_atoms, info=info
             )
@@ -374,6 +324,7 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
             grouped[policy_key]["current_atoms"].append(current_atoms)
             grouped[policy_key]["goal_atoms"].append(goal_atoms)
 
+        # Convert grouped data to TrainingData objects
         result = {}
         for key, group in grouped.items():
             result[key] = TrainingData(
@@ -400,8 +351,6 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         wrapper."""
         if hasattr(env, "configure_training"):
             env.configure_training(training_data)
-        if hasattr(env, "max_episode_steps"):
-            env.max_episode_steps = self.config.max_episode_steps
         if hasattr(env, "env"):
             self._configure_env_recursively(env.env, training_data)
 
@@ -431,18 +380,22 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         path_obj.mkdir(parents=True, exist_ok=True)
         already_saved = self._saved_models
 
+        # Save each policy in its own subdirectory
         for key, policy in self.policies.items():
             if key in already_saved:
                 continue
+
             safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)
             policy_path = os.path.join(path, f"policy_{safe_key}")
             policy.save(policy_path)
 
+        # Save pattern information
         for policy_key, pattern in self._policy_patterns.items():
             pattern_file = os.path.join(path, f"pattern_{policy_key}.pkl")
             with open(pattern_file, "wb") as f:
                 pickle.dump(pattern, f)
 
+        # Save a manifest of all policies
         manifest = {
             "policies": list(self.policies.keys()),
             "policy_count": len(self.policies),
@@ -455,6 +408,7 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
         with open(os.path.join(path, "manifest.json"), "r", encoding="utf-8") as f:
             manifest = json.load(f)
 
+        # Load pattern information if available
         self._policy_patterns = {}
         for policy_key in manifest["policies"]:
             pattern_file = os.path.join(path, f"pattern_{policy_key}.pkl")
@@ -462,92 +416,18 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
                 with open(pattern_file, "rb") as f:
                     self._policy_patterns[policy_key] = pickle.load(f)
 
+        # Load individual policies
         self.policies = {}
         for key in manifest["policies"]:
             safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)
             policy_path = os.path.join(path, f"policy_{safe_key}")
+
             policy: RLPolicy = RLPolicy(self._seed, self.config)
             policy.load(policy_path)
+
             self.policies[key] = policy
 
         print(f"Loaded {len(self.policies)} specialized policies")
-
-
-class EnvFactory:
-    """Picklable factory that reconstructs a training environment in a worker process."""
-
-    def __init__(
-        self,
-        system_cls: type,
-        system_kwargs: dict,
-        relevant_objects: set[str] | None,
-        obs_space_shape: tuple | None,
-        group_data: TrainingData,
-    ):
-        self.system_cls = system_cls
-        self.system_kwargs = system_kwargs
-        self.relevant_objects = relevant_objects
-        self.obs_space_shape = obs_space_shape
-        self.group_data = group_data
-
-    def __call__(self) -> gym.Env:
-        """Create a fresh environment in the current process."""
-        import inspect
-        create_fn = self.system_cls.create_default
-        sig = inspect.signature(create_fn)
-        valid_params = sig.parameters
-        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in valid_params.values()):
-            filtered = self.system_kwargs
-        else:
-            filtered = {k: v for k, v in self.system_kwargs.items() if k in valid_params}
-        system = create_fn(**filtered)
-        env = system.wrapped_env
-
-        if self.relevant_objects is not None and hasattr(env, "set_relevant_objects"):
-            env.set_relevant_objects(self.relevant_objects)
-
-        if self.obs_space_shape is not None:
-            env.observation_space = Box(
-                low=-np.inf, high=np.inf, shape=self.obs_space_shape, dtype=np.float32,
-            )
-
-        # Configure training data on the env
-        current = env
-        while current is not None:
-            if hasattr(current, "configure_training"):
-                current.configure_training(self.group_data)
-            current = getattr(current, "env", None)
-
-        return env
-
-
-def _train_policy_in_process(
-    policy: RLPolicy,
-    env_factory: "EnvFactory",
-    train_data: TrainingData,
-    policy_key: str,
-    save_dir: str | None = None,
-):
-    """Train a single policy in a worker process, reconstructing the env from factory."""
-    import os, torch
-    env = env_factory()
-    callback = TrainingProgressCallback(
-        check_freq=policy.config.training_record_interval,
-        early_stopping=policy.config.early_stopping,
-        early_stopping_patience=policy.config.early_stopping_patience,
-        early_stopping_threshold=0.8,
-        policy_key=policy_key,
-    )
-    policy.train(env, train_data, callback=callback)
-
-    # Save model so main process can load it
-    if save_dir and hasattr(policy, "model") and policy.model is not None:
-        safe_key = "".join(c if c.isalnum() or c in "-_" else "_" for c in policy_key)
-        save_path = os.path.join(save_dir, f"policy_{safe_key}")
-        os.makedirs(save_dir, exist_ok=True)
-        policy.model.save(save_path)
-        return {"success": True, "saved_path": save_path}
-    return {"success": True}
 
 
 def train_single_policy(
@@ -555,23 +435,17 @@ def train_single_policy(
     env: gym.Env,
     train_data: TrainingData,
     policy_key: str | None = None,
-    save_dir: str | None = None,
 ):
-    """Train a single policy with a callback (sequential path)."""
-    checkpoint_dir = None
-    if save_dir:
-        checkpoint_dir = str(Path(save_dir) / "checkpoints")
+    """Train a single policy with a callback."""
     callback = TrainingProgressCallback(
-        check_freq=policy.config.training_record_interval,
-        early_stopping=policy.config.early_stopping,
-        early_stopping_patience=policy.config.early_stopping_patience,
+        check_freq=train_data.config.get("training_record_interval", 100),
+        early_stopping=True,
+        early_stopping_patience=1,
         early_stopping_threshold=0.8,
         policy_key=policy_key,
-        save_checkpoints=True,
-        checkpoint_dir=checkpoint_dir,
     )
     policy.train(env, train_data, callback=callback)
-    return {"success": True, "best_checkpoint": callback.best_checkpoint_path}
+    return True
 
 
 def find_atom_substitution(
@@ -584,7 +458,7 @@ def find_atom_substitution(
     for atom in test_atoms:
         test_atoms_by_pred[atom.predicate.name].append(atom)
 
-    # Quick check: if there are enough atoms of each predicate type in test_atoms
+    # Quick check - if there are enough atoms of each predicate type in test_atoms
     train_pred_counts = Counter(atom.predicate.name for atom in train_atoms)
     for pred_name, count in train_pred_counts.items():
         if len(test_atoms_by_pred[pred_name]) < count:
@@ -601,7 +475,7 @@ def find_atom_substitution(
             if obj not in test_objs_by_type[obj.type]:
                 test_objs_by_type[obj.type].append(obj)
 
-    # Quick check: if there are enough test objects for each type
+    # Quick check - if there are enough test objects for each type
     for obj_type, objs in train_objs_by_type.items():
         if len(test_objs_by_type[obj_type]) < len(objs):
             return False, {}

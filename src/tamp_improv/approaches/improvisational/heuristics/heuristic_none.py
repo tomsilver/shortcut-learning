@@ -100,8 +100,14 @@ class NoneHeuristic(BaseHeuristic):
 
         return pruned_training_data
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, **kwargs) -> dict[str, Any]:
         return self.multi_train()
+
+    def save(self, path: str) -> None:
+        pass
+
+    def load(self, path: str) -> None:
+        pass
 
     def prune_by_success(
         self, success_threshold: float, max_steps: int, **kwargs: Any

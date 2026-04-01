@@ -73,6 +73,7 @@ class CMDV2HeuristicConfig:
     threshold: float = 0.05
     beta: float = 1  # Complex distance scaling parameter
     num_reliability_trials: int = 10  # Number of recent trials to estimate success probability for pruning
+    node_distance_samples: int = 10  # States to average over in estimate_node_distance
 
     # Network architecture
     latent_dim: int = 32  # Dimension of embedding space (k)
@@ -337,6 +338,7 @@ class CMDv2Heuristic(BaseHeuristic):
             self.valid_pairs_mask[i, j] = True
 
         self.node_pair_successes = {}
+        self._graduation_cooldown: dict[tuple[int, int], int] = {}
         for (i, j) in self.valid_pairs:
             # Buffer of size k for each node pair to track recent success/failure outcomes
             k = self.config.num_reliability_trials
@@ -542,7 +544,7 @@ class CMDv2Heuristic(BaseHeuristic):
         self.c_net = CostNet(g_dim=self.config.latent_dim).to(device)
 
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, checkpoint_callback: Any = None) -> dict[str, Any]:
         """Train for one round (multiple epochs with rollouts).
 
         Returns:
@@ -561,7 +563,6 @@ class CMDv2Heuristic(BaseHeuristic):
         critic_losses = []
         actor_losses = []
 
-        self._update_medoids()
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
@@ -578,9 +579,6 @@ class CMDv2Heuristic(BaseHeuristic):
                         critic_losses.append(critic_loss)
                         actor_losses.append(actor_loss)
 
-            if (epoch + 1) % self.config.medoid_update_frequency == 0:
-                self._update_medoids()
-
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
                 self._update_gains()
 
@@ -594,8 +592,10 @@ class CMDv2Heuristic(BaseHeuristic):
                     f"Critic loss: {critic_loss_str} | "
                     f"Actor loss: {actor_loss_str}"
                 )
-        
-        self._update_medoids()
+
+            if checkpoint_callback is not None and (epoch + 1) % 100 == 0:
+                checkpoint_callback()
+
         self._update_gains()
 
         return {
@@ -609,6 +609,7 @@ class CMDv2Heuristic(BaseHeuristic):
         self,
         graduate_fn: Any = None,
         success_threshold: float = 0.9,
+        checkpoint_callback: Any = None,
     ) -> dict[str, Any]:
         """Train with continuous graduation: graduate pairs online as they become reliable.
 
@@ -636,7 +637,6 @@ class CMDv2Heuristic(BaseHeuristic):
         critic_losses: list[float] = []
         actor_losses: list[float] = []
 
-        self._update_medoids()
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
@@ -645,17 +645,20 @@ class CMDv2Heuristic(BaseHeuristic):
                 self.replay_buffer.add_trajectory(trajectory)
 
                 # Check if this pair just crossed the graduation threshold
-                successes = self.node_pair_successes.get((source_id, target_id), [])
-                k = self.config.num_reliability_trials
-                if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
-                    print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
-                    if graduate_fn is not None:
-                        graduate_fn(self, source_id, target_id)
-                    self._update_graph_distances(source_id, target_id)
-                    self._update_first_edge_dict(source_id, target_id)
-                    self._update_gains()
-                    # Clear success record so the pair must re-earn graduation before re-adding
-                    self.node_pair_successes[(source_id, target_id)].clear()
+                pair = (source_id, target_id)
+                if self._graduation_cooldown.get(pair, 0) > 0:
+                    self._graduation_cooldown[pair] -= 1
+                else:
+                    successes = self.node_pair_successes.get(pair, [])
+                    k = self.config.num_reliability_trials
+                    if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
+                        print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
+                        if graduate_fn is not None:
+                            graduate_fn(self, source_id, target_id)
+                        self._update_graph_distances(source_id, target_id)
+                        self._update_first_edge_dict(source_id, target_id)
+                        self._update_gains()
+                        self._graduation_cooldown[pair] = k
 
             if (epoch + 1) % self.config.learn_frequency == 0:
                 if len(self.replay_buffer) >= self.config.batch_size:
@@ -663,9 +666,6 @@ class CMDv2Heuristic(BaseHeuristic):
                         critic_loss, actor_loss = self._update_networks()
                         critic_losses.append(critic_loss)
                         actor_losses.append(actor_loss)
-
-            if (epoch + 1) % self.config.medoid_update_frequency == 0:
-                self._update_medoids()
 
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
                 self._update_gains()
@@ -680,7 +680,9 @@ class CMDv2Heuristic(BaseHeuristic):
                     f"Actor loss: {actor_loss_str}"
                 )
 
-        self._update_medoids()
+            if checkpoint_callback is not None and (epoch + 1) % 100 == 0:
+                checkpoint_callback()
+
         self._update_gains()
 
         return {
@@ -818,7 +820,7 @@ class CMDv2Heuristic(BaseHeuristic):
         )
         if edge is not None:
             operator = edge.operator
-            skills = [s for s in self.system.skills if s.can_execute(operator)]
+            skills = [s for s in self.virtual_system.skills if s.can_execute(operator)]
             if skills:
                 skill = skills[0]
                 skill.reset(operator)
@@ -865,7 +867,7 @@ class CMDv2Heuristic(BaseHeuristic):
             if edge is None:
                 continue
             operator = edge.operator
-            skills = [s for s in self.system.skills if s.can_execute(operator)]
+            skills = [s for s in self.virtual_system.skills if s.can_execute(operator)]
             if not skills:
                 continue
             skill = skills[0]
@@ -1145,7 +1147,7 @@ class CMDv2Heuristic(BaseHeuristic):
     def estimate_node_distance(self, source_node: int, target_node: int) -> float:
         """Estimate distance between nodes.
 
-        Samples a random state from source_node and estimates distance.
+        Averages over sampled states from source_node for robustness.
 
         Args:
             source_node: Source node ID
@@ -1154,10 +1156,13 @@ class CMDv2Heuristic(BaseHeuristic):
         Returns:
             Estimated distance
         """
-        source_medoid = self._node_medoids.get(source_node)
-        if source_medoid is None:
+        source_states = self.training_data.node_states.get(source_node, [])
+        if not source_states:
             return float("inf")
-        d_sg = self.latent_dist(source_medoid, target_node)
+        k = self.config.node_distance_samples
+        samples = random.sample(source_states, min(k, len(source_states)))
+        dists = [self.latent_dist(s, target_node) for s in samples]
+        d_sg = float(np.mean(dists))
         return self.config.dist_scale * max(0, -(1 / (np.log(self.config.gamma))) * d_sg)
 
     def prune_by_success(self, success_threshold: float, max_steps: int) -> GoalConditionedTrainingData:
@@ -1228,7 +1233,17 @@ class CMDv2Heuristic(BaseHeuristic):
 
         
     
-    def prune(self, max_shortcuts: int) -> GoalConditionedTrainingData:
+    def estimate_probability(self, source_node: int, target_node: int) -> float:
+        """Estimate PPO success probability from distance using Brownian motion argument."""
+        est_dist = self.estimate_node_distance(source_node, target_node)
+        if est_dist <= 0:
+            p_rr = 1.0
+        else:
+            p_rr = np.clip(np.exp(-est_dist**2 / (2 * self.config.max_episode_steps)), 0, 1)
+        k = np.log(0.5) / np.log(1 - 0.05)  # threshold = 0.05
+        return 1 - (1 - p_rr)**k
+
+    def prune(self, max_shortcuts: int, use_multi_rl: bool = False) -> GoalConditionedTrainingData:
 
         print(f"\n[DEBUG] Pruning greedily to max_shortcuts={max_shortcuts}")
 
@@ -1240,39 +1255,54 @@ class CMDv2Heuristic(BaseHeuristic):
         if max_shortcuts is None or max_shortcuts >= len(self.training_data.unique_shortcuts):
             return self.training_data
 
-        # Reshape self.training_data.unique_shortcuts
         starts = np.array([x for (x, _) in self.training_data.unique_shortcuts])
         ends = np.array([y for (_, y) in self.training_data.unique_shortcuts])
-        
+
         curr_gains = self.node_pair_gains.copy()
-        curr_dists = self.original_node_pair_graph_dists.copy()
+        curr_dists = self.node_pair_graph_dists.copy()
+        self.node_pair_graph_dists = self.original_node_pair_graph_dists.copy()
 
         pruned_pairs = []
 
+        prev_auto = self.config.auto_dist_scale
         self.config.auto_dist_scale = False
 
         for i in range(max_shortcuts):
             self._update_gains()
-
-            # Take maximum gain shortcut using node_pairs as indices into self.node_pair_gains
             gains = self.node_pair_gains[starts, ends]
-            max_idx = np.argmax(gains)
+
+            probs = np.zeros(len(starts))
+            if use_multi_rl:
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    probs[j] = self.estimate_probability(int(s), int(t))
+            else:
+                k = self.config.num_reliability_trials
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    trials = self.node_pair_successes.get((int(s), int(t)), [])
+                    if len(trials) >= k > 0:
+                        probs[j] = float(np.mean(trials))
+
+            if np.any(probs > 0):
+                scores = probs * gains
+            else:
+                scores = gains
+
+            max_idx = np.argmax(scores)
             source_id = starts[max_idx]
             target_id = ends[max_idx]
+            p = probs[max_idx]
             pruned_pairs.append((source_id, target_id))
 
-            # Update graph distances
             self._update_graph_distances(source_id, target_id)
 
-            # Remove this pair from consideration
             starts = np.delete(starts, max_idx)
             ends = np.delete(ends, max_idx)
 
-            print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} with gain {gains[max_idx]:.2f}")
+            print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} (gain={gains[max_idx]:.2f}, p={p:.2f}, score={scores[max_idx]:.2f})")
         
-        self.config.auto_dist_scale = True
-        # self.node_pair_gains = curr_gains
-        # self.node_pair_graph_dists = curr_dists
+        self.config.auto_dist_scale = prev_auto
+        self.node_pair_gains = curr_gains
+        self.node_pair_graph_dists = curr_dists
         
         # Keep all state-node pairs that correspond to selected node-node pairs
         selected_set = set(pruned_pairs)

@@ -132,6 +132,7 @@ class DSACv2HeuristicConfig:
 
     # Success tracking
     num_reliability_trials: int = 10
+    node_distance_samples: int = 10  # States to average over in estimate_node_distance
 
     device: str = "cuda"
 
@@ -217,6 +218,7 @@ class DSACv2Heuristic(BaseHeuristic):
         self.first_edge_dict = first_edge_dict
         self.internal_graph = training_data.graph
         self.virtual_system = copy.deepcopy(system)
+        # self.virtual_system = None
 
         if config is None:
             config = DSACv2HeuristicConfig()
@@ -268,6 +270,7 @@ class DSACv2Heuristic(BaseHeuristic):
             self.valid_pairs_mask[i, j] = True
 
         self.node_pair_successes: dict[tuple[int, int], Any] = {}
+        self._graduation_cooldown: dict[tuple[int, int], int] = {}
         for (i, j) in self.valid_pairs:
             k = self.config.num_reliability_trials
             if k > 0:
@@ -377,7 +380,7 @@ class DSACv2Heuristic(BaseHeuristic):
     def multi_train(self, **kwargs: Any) -> dict[str, Any]:
         return {"critic_losses": [], "actor_losses": [], "buffer_size": 0}
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, checkpoint_callback: Any = None) -> dict[str, Any]:
         self.total_samples = 0
         self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
         k = self.config.num_reliability_trials
@@ -387,7 +390,6 @@ class DSACv2Heuristic(BaseHeuristic):
         critic_losses: list[float] = []
         actor_losses: list[float] = []
 
-        self._update_medoids()
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
@@ -402,9 +404,6 @@ class DSACv2Heuristic(BaseHeuristic):
                         critic_losses.append(c_loss)
                         actor_losses.append(a_loss)
 
-            if (epoch + 1) % self.config.medoid_update_frequency == 0:
-                self._update_medoids()
-
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
                 self._update_gains()
 
@@ -416,6 +415,9 @@ class DSACv2Heuristic(BaseHeuristic):
                     f"Buffer: {len(self.replay_buffer)} | "
                     f"Critic: {c_str} | Actor: {a_str}"
                 )
+
+            if checkpoint_callback is not None and (epoch + 1) % 100 == 0:
+                checkpoint_callback()
 
         self._update_gains()
 
@@ -711,7 +713,7 @@ class DSACv2Heuristic(BaseHeuristic):
                 continue
             operator = edge.operator
             if operator not in skill_cache:
-                skills = [sk for sk in self.system.skills if sk.can_execute(operator)]
+                skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
                 skill_cache[operator] = skills[0] if skills else None
             skill = skill_cache[operator]
             if skill is None:
@@ -740,7 +742,7 @@ class DSACv2Heuristic(BaseHeuristic):
             )
             if edge is not None:
                 operator = edge.operator
-                skills = [sk for sk in self.system.skills if sk.can_execute(operator)]
+                skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
                 if not skills:
                     raise TaskThenMotionPlanningFailure(f"No skill for operator {operator.name}")
                 skill = skills[0]
@@ -781,10 +783,14 @@ class DSACv2Heuristic(BaseHeuristic):
         return torch.maximum(dist_1, dist_2).item()
 
     def estimate_node_distance(self, source_node: int, target_node: int) -> float:
-        medoid = self._node_medoids.get(source_node)
-        if medoid is None:
+        # Multi-state averaging estimation:
+        source_states = self.training_data.node_states.get(source_node, [])
+        if not source_states:
             return float("inf")
-        return self.config.dist_scale * self.estimate_distance(medoid, target_node)
+        k = self.config.node_distance_samples
+        samples = random.sample(source_states, min(k, len(source_states)))
+        dists = [self.estimate_distance(s, target_node) for s in samples]
+        return self.config.dist_scale * float(np.mean(dists))
 
     def _batch_estimate_raw_distances(self, pairs: list[tuple[int, int]]) -> np.ndarray:
         """Batch pessimistic expected distances for all (src, tgt) pairs."""
@@ -918,6 +924,7 @@ class DSACv2Heuristic(BaseHeuristic):
         self,
         graduate_fn: Any = None,
         success_threshold: float = 0.9,
+        checkpoint_callback: Any = None,
     ) -> dict[str, Any]:
         """Train with continuous graduation: graduate pairs online as they become reliable.
 
@@ -939,7 +946,6 @@ class DSACv2Heuristic(BaseHeuristic):
         critic_losses: list[float] = []
         actor_losses: list[float] = []
 
-        self._update_medoids()
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
@@ -948,17 +954,20 @@ class DSACv2Heuristic(BaseHeuristic):
                 self._add_to_buffer_with_her(trajectory, goal_vec, target_id, source_id)
 
                 # Check if this pair just crossed the graduation threshold
-                successes = self.node_pair_successes.get((source_id, target_id), [])
-                k = self.config.num_reliability_trials
-                if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
-                    print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
-                    if graduate_fn is not None:
-                        graduate_fn(self, source_id, target_id)
-                    self._update_graph_distances(source_id, target_id)
-                    self._update_first_edge_dict(source_id, target_id)
-                    self._update_gains()
-                    # Clear success record so the pair must re-earn graduation before re-adding
-                    self.node_pair_successes[(source_id, target_id)].clear()
+                pair = (source_id, target_id)
+                if self._graduation_cooldown.get(pair, 0) > 0:
+                    self._graduation_cooldown[pair] -= 1
+                else:
+                    successes = self.node_pair_successes.get(pair, [])
+                    k = self.config.num_reliability_trials
+                    if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
+                        print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
+                        if graduate_fn is not None:
+                            graduate_fn(self, source_id, target_id)
+                        self._update_graph_distances(source_id, target_id)
+                        self._update_first_edge_dict(source_id, target_id)
+                        self._update_gains()
+                        self._graduation_cooldown[pair] = k
 
             if (epoch + 1) % self.config.learn_frequency == 0:
                 if len(self.replay_buffer) >= self.config.batch_size:
@@ -966,9 +975,6 @@ class DSACv2Heuristic(BaseHeuristic):
                         c_loss, a_loss = self._update_networks()
                         critic_losses.append(c_loss)
                         actor_losses.append(a_loss)
-
-            if (epoch + 1) % self.config.medoid_update_frequency == 0:
-                self._update_medoids()
 
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
                 self._update_gains()
@@ -982,7 +988,8 @@ class DSACv2Heuristic(BaseHeuristic):
                     f"Critic: {c_str} | Actor: {a_str}"
                 )
 
-        self._update_medoids()
+            if checkpoint_callback is not None and (epoch + 1) % 100 == 0:
+                checkpoint_callback()
         self._update_gains()
 
         return {
@@ -1020,7 +1027,17 @@ class DSACv2Heuristic(BaseHeuristic):
                 pruned_pairs.append((x, y))
         return self._build_pruned_data(pruned_pairs)
 
-    def prune(self, max_shortcuts: int) -> "GoalConditionedTrainingData":
+    def estimate_probability(self, source_node: int, target_node: int) -> float:
+        """Estimate PPO success probability from distance using Brownian motion argument."""
+        est_dist = self.estimate_node_distance(source_node, target_node)
+        if est_dist <= 0:
+            p_rr = 1.0
+        else:
+            p_rr = np.clip(np.exp(-est_dist**2 / (2 * self.config.max_episode_steps)), 0, 1)
+        k = np.log(0.5) / np.log(1 - 0.05)  # threshold = 0.05
+        return 1 - (1 - p_rr)**k
+
+    def prune(self, max_shortcuts: int, use_multi_rl: bool = False) -> "GoalConditionedTrainingData":
         print(f"\nPruning greedily to max_shortcuts={max_shortcuts}")
 
         print("Estimated distances for all shortcuts:")
@@ -1035,7 +1052,8 @@ class DSACv2Heuristic(BaseHeuristic):
         ends = np.array([y for _, y in self.training_data.unique_shortcuts])
 
         curr_gains = self.node_pair_gains.copy()
-        curr_dists = self.node_pair_graph_dists.copy()
+        curr_dists = self.node_pair_graph_dists.copy()  # post-graduation dists to restore
+        self.node_pair_graph_dists = self.original_node_pair_graph_dists.copy()
 
         pruned_pairs: list[tuple[int, int]] = []
         prev_auto = self.config.auto_dist_scale
@@ -1044,13 +1062,32 @@ class DSACv2Heuristic(BaseHeuristic):
         for i in range(max_shortcuts):
             self._update_gains()
             gains = self.node_pair_gains[starts, ends]
-            best = int(np.argmax(gains))
+
+            # Compute success probabilities
+            probs = np.zeros(len(starts))
+            if use_multi_rl:
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    probs[j] = self.estimate_probability(int(s), int(t))
+            else:
+                k = self.config.num_reliability_trials
+                for j, (s, t) in enumerate(zip(starts, ends)):
+                    trials = self.node_pair_successes.get((int(s), int(t)), [])
+                    if len(trials) >= k > 0:
+                        probs[j] = float(np.mean(trials))
+
+            if np.any(probs > 0):
+                scores = probs * gains
+            else:
+                scores = gains
+
+            best = int(np.argmax(scores))
             src, tgt = int(starts[best]), int(ends[best])
+            p = probs[best]
             pruned_pairs.append((src, tgt))
             self._update_graph_distances(src, tgt)
             starts = np.delete(starts, best)
             ends = np.delete(ends, best)
-            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f})")
+            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f}, p={p:.2f}, score={scores[best]:.2f})")
 
         self.config.auto_dist_scale = prev_auto
         self.node_pair_gains = curr_gains

@@ -404,7 +404,7 @@ class SACv2Heuristic(BaseHeuristic):
         """Stub — pipeline calls train_one_round() directly."""
         return {"critic_losses": [], "actor_losses": [], "buffer_size": 0}
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, **kwargs) -> dict[str, Any]:
         """Train for one round (multiple epochs)."""
         self.total_samples = 0
         self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
@@ -821,7 +821,7 @@ class SACv2Heuristic(BaseHeuristic):
                 pruned_pairs.append((x, y))
         return self._build_pruned_data(pruned_pairs)
 
-    def prune(self, max_shortcuts: int) -> "GoalConditionedTrainingData":
+    def prune(self, max_shortcuts: int, **kwargs) -> "GoalConditionedTrainingData":
         print(f"\nPruning greedily to max_shortcuts={max_shortcuts}")
 
         print("Estimated distances for all shortcuts:")

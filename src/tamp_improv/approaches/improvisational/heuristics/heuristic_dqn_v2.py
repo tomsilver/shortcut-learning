@@ -483,7 +483,7 @@ class DQNv2Heuristic(BaseHeuristic):
     # Training
     # ------------------------------------------------------------------
 
-    def train_one_round(self) -> dict[str, Any]:
+    def train_one_round(self, **kwargs) -> dict[str, Any]:
         """Train for one round (manual epoch loop over model.learn calls).
 
         Returns:
@@ -773,7 +773,7 @@ class DQNv2Heuristic(BaseHeuristic):
 
         return self._build_pruned_data(pruned_pairs, "dqn")
 
-    def prune(self, max_shortcuts: int) -> GoalConditionedTrainingData:
+    def prune(self, max_shortcuts: int, **kwargs) -> GoalConditionedTrainingData:
         print(f"\n[DEBUG] Pruning greedily to max_shortcuts={max_shortcuts}")
 
         print("Heuristic-Estimated Lengths of All Shortcuts:")

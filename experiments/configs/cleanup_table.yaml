@@ -2,6 +2,7 @@ seed: 42
 debug: false
 render_mode: null
 eval_heuristic_only: false
+resume_from: null
 wandb_enabled: false
 
 env:
@@ -48,7 +49,7 @@ heuristic:
     action_scale: 0.005
     success_threshold: 0.04
     gain_method: exact
-    auto_dist_scale: true
+    auto_dist_scale: false
     dist_scale: 1.0
     dist_quantile: 0.9
 
@@ -66,7 +67,7 @@ heuristic:
     iters_per_epoch: 10
     learn_frequency: 1
     gain_update_frequency: 100
-    medoid_update_frequency: 10
+    medoid_update_frequency: 100
     node_distance_samples: 5
 
     num_epochs_per_round: 720  # Epochs per round (used as num_epochs_per_round in multi_train)
@@ -89,7 +90,7 @@ heuristic:
     auto_dist_scale: true  # Whether to automatically set dist_scale based on quantile
     residualize: false  # Whether to residualize actor actions with base skill actions
 
-    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+    num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
   # SAC V2 heuristic parameters
   sac:
@@ -111,7 +112,7 @@ heuristic:
     max_episode_steps: 600
     learn_frequency: 1
     gain_update_frequency: 100
-    medoid_update_frequency: 10
+    medoid_update_frequency: 100
     iters_per_epoch: 100
     grad_clip: 1.0
     log_alpha_min: -5.0
@@ -131,7 +132,7 @@ heuristic:
     residualize: false
     max_atom_size: 60
 
-    num_reliability_trials: 5  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+    num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
 
 # M = 10 * 10 * 10 = 1000

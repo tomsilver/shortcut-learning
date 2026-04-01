@@ -21,6 +21,7 @@ The pipeline returns all results; the experiment handles saving.
 import copy
 import itertools
 import os
+import pickle
 import random
 import time
 from dataclasses import dataclass, field
@@ -436,6 +437,8 @@ def create_policy(
             training_record_interval=cfg.policy.training_record_interval,
             early_stopping=cfg.policy.early_stopping,
             early_stopping_patience=cfg.policy.early_stopping_patience,
+            n_envs=cfg.policy.get("n_envs", 1),
+            num_parallel_workers=cfg.policy.get("num_parallel_workers", 0),
         )
         return MultiRLPolicy(seed=cfg.seed, config=rl_config)
     else:
@@ -474,6 +477,7 @@ class PipelineResults:
     # === After Training (Pruning) ===
     pruned_shortcuts: list[tuple[int, int]] | None = None
     all_shortcuts: list[tuple[int, int]] | None = None
+    shortcut_quality_results: list[dict[str, Any]] | None = None
 
     # === Evaluation ===
     # Each episode dict has keys: success, num_steps, reward,
@@ -739,12 +743,14 @@ def find_valid_groundings(
 def train_heuristic(
     heuristic: "BaseHeuristic",
     cfg: DictConfig,
+    checkpoint_callback: Callable[[], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Stage 2: Train the heuristic.
 
     Args:
         heuristic: Initialized heuristic instance
         config: Configuration dictionary
+        checkpoint_callback: If provided, called periodically during training to save heuristic state.
 
     Returns:
         List of per-round data dicts, each containing loss curves,
@@ -784,6 +790,7 @@ def train_heuristic(
         training_history = heuristic.train_continuous(
             graduate_fn=_graduation_callback,
             success_threshold=cfg.heuristic.success_threshold,
+            checkpoint_callback=checkpoint_callback,
         )
         round_data: dict[str, Any] = {
             "critic_losses": training_history.get("critic_losses", []),
@@ -799,7 +806,7 @@ def train_heuristic(
 
     for i in range(cfg.heuristic.num_rounds):
         print(f"\n=== Heuristic Training Round {i+1}/{cfg.heuristic.num_rounds} ===")
-        training_history = heuristic.train_one_round()
+        training_history = heuristic.train_one_round(checkpoint_callback=checkpoint_callback)
 
         # Build per-round data dict
         round_data: dict[str, Any] = {
@@ -813,7 +820,7 @@ def train_heuristic(
         # Extract UCB / gains / estimated distances from heuristic
         round_data.update(_extract_heuristic_round_data(heuristic, training_data))
 
-        if cfg.debug and cfg.heuristic.type in ["sac_v2", "crl_v2", "cmd_v2"]:
+        if cfg.heuristic.num_rounds > 1 and cfg.debug and cfg.heuristic.type in ["sac_v2", "crl_v2", "cmd_v2"]:
             all_data = heuristic.prune(max_shortcuts=None)
             policy = create_policy(cfg=cfg)
 
@@ -1283,7 +1290,7 @@ def _log_distance_plots_to_wandb(
 
 
 def prune_with_heuristic(
-    heuristic: "BaseHeuristic", max_shortcuts: int | None
+    heuristic: "BaseHeuristic", max_shortcuts: int | None, use_multi_rl: bool = False
 ) -> GoalConditionedTrainingData:
     """Stage 3: Prune shortcuts using the heuristic.
 
@@ -1299,7 +1306,7 @@ def prune_with_heuristic(
     # print("=" * 80)
 
     # Call prune - interface is the same for all heuristics
-    pruned_data = heuristic.prune(max_shortcuts=max_shortcuts)
+    pruned_data = heuristic.prune(max_shortcuts=max_shortcuts, use_multi_rl=use_multi_rl)
 
     print(
         f"\nPruning complete: {len(pruned_data.unique_shortcuts)} unique shortcuts remaining"
@@ -1475,6 +1482,8 @@ def create_policy_dictionary(
     training_data: GoalConditionedTrainingData,
     cfg: DictConfig,
     use_multi_rl: bool,
+    system_cls: type | None = None,
+    system_kwargs: dict | None = None,
 ) -> dict[tuple[int, int], Policy[ObsType, ActType]]:
     """Create dictionary D mapping (source, target) pairs to policy wrappers.
 
@@ -1520,6 +1529,8 @@ def create_policy_dictionary(
             policy.train(
                 env=system.wrapped_env,
                 train_data=training_data,
+                system_cls=system_cls,
+                system_kwargs=system_kwargs if system_cls else None,
             )
             print("Policy training complete")
         else:
@@ -1656,20 +1667,6 @@ def add_shortcuts_to_graph(
             delete_effects=delete_effects,
         )
 
-        # Check for collision with existing operators
-        collision = False
-        for existing_op in system.components.operators:
-            if existing_op == shortcut_operator:
-                print(
-                    f"  [WARN] Skipping '{shortcut_name}' - "
-                    f"collides with existing operator '{existing_op.name}'"
-                )
-                collision = True
-                break
-
-        if collision:
-            continue
-
         # Create the skill wrapping the policy
         shortcut_skill = ShortcutSkill(
             policy_wrapper=policy_wrapper,
@@ -1678,6 +1675,25 @@ def add_shortcuts_to_graph(
             perceiver=system.perceiver,
             target_atoms=target_atoms,
         )
+
+        # Check for collision with existing operators (re-graduation case)
+        replaced = False
+        for existing_op in system.components.operators:
+            if existing_op == shortcut_operator:
+                # Remove the stale skill for this operator and replace with the
+                # fresher one from the most recent graduation.
+                old_skills = {sk for sk in system.components.skills if sk.can_execute(existing_op)}
+                system.components.skills -= old_skills
+                system.components.skills.add(shortcut_skill)
+                print(
+                    f"  [INFO] Replaced skill for '{shortcut_name}' "
+                    f"(re-graduated, {len(old_skills)} old skill(s) removed)"
+                )
+                replaced = True
+                break
+
+        if replaced:
+            continue
 
         # Add operator and skill to system components
         system.components.operators.add(shortcut_operator)
@@ -1986,18 +2002,24 @@ def get_latent_embeddings(
 def run_pipeline(
     system: ImprovisationalTAMPSystem[ObsType, ActType],
     cfg: DictConfig,
+    output_dir: Path | None = None,
+    system_cls: type | None = None,
+    system_kwargs: dict | None = None,
 ) -> PipelineResults:
     """Run the complete SLAP pipeline.
 
     Args:
         system: TAMP system
         cfg: Configuration dictionary with all parameters
+        output_dir: Hydra output directory for checkpointing (None disables checkpointing)
 
     Returns:
         PipelineResults with serializable outputs from the pipeline
     """
     results = PipelineResults()
     results.config = OmegaConf.to_container(cfg, resolve=True)
+
+    ckpt_dir = Path(output_dir) if output_dir else None
 
     # Setup RNG
     seed = cfg.seed
@@ -2032,98 +2054,183 @@ def run_pipeline(
 
     times: dict[str, float] = {}
 
-    # Stage 1: Collect training data
-    print("STAGE 1: COLLECT TRAINING DATA")
-    start = time.time()
-    if cfg.collection.load_data:
-        if cfg.collection.training_data_path is None:
-            raise ValueError("load_data=True but training_data_path is not set in config")
-        data_path = Path(cfg.collection.training_data_path)
-        if not data_path.exists():
-            raise FileNotFoundError(
-                f"load_data=True but training data not found at: {data_path}"
-            )
-        print(f"Loading training data from {data_path} ...")
-        training_data = GoalConditionedTrainingData.load(data_path)
+    # ── Resume from checkpoint ────────────────────────────────────────
+    resume_path = getattr(cfg, "resume_from", None)
+    if resume_path:
+        resume_path = Path(resume_path)
+        print(f"RESUMING FROM: {resume_path}")
+
+        # Load training data
+        td_path = resume_path / "training_data"
+        if td_path.exists():
+            print(f"  Loading training data from {td_path}")
+            training_data = GoalConditionedTrainingData.load(td_path)
+        elif cfg.collection.load_data and cfg.collection.training_data_path:
+            print(f"  Loading training data from {cfg.collection.training_data_path}")
+            training_data = GoalConditionedTrainingData.load(Path(cfg.collection.training_data_path))
+        else:
+            raise FileNotFoundError(f"No training data found at {td_path} and load_data not configured")
         graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
         first_edge_dict = compute_first_edge_dict(training_data.graph)
-        g = training_data.graph
-        num_nodes = len(g.nodes) if g else 0
-        num_edges = len(g.edges) if g else 0
-        total_states = sum(
-            (len(v) if isinstance(v, list) else 1)
-            for v in training_data.node_states.values()
-        )
-        print(f"  Graph:            {num_nodes} nodes, {num_edges} edges")
-        print(f"  Node states:      {len(training_data.node_states)} nodes with states ({total_states} total states)")
-        print(f"  Unique shortcuts: {len(training_data.unique_shortcuts)}")
-        print(f"  Valid shortcuts:  {len(training_data.valid_shortcuts)} (with per-state duplicates)")
-        print(f"  Node atoms:       {len(training_data.node_atoms)} nodes with atoms")
 
-        
-    else:
-        training_data, graph_distances, first_edge_dict = collect_training_data(
-            system=system,
-            approach=approach,
-            cfg=cfg,
-            rng=rng,
-        )
-        if cfg.collection.training_data_path is not None:
-            data_path = Path(cfg.collection.training_data_path)
-            data_path.mkdir(parents=True, exist_ok=True)
-            training_data.save(data_path)
-            print(f"Saved training data to {data_path}")
-    times["collection_time"] = time.time() - start
-
-    # Store serializable pre-training data
-    node_atoms_ser, node_states_ser = _extract_node_data(training_data)
-    results.node_atoms = node_atoms_ser
-    results.node_states = node_states_ser
-    results.unique_shortcuts = list(training_data.unique_shortcuts)
-    results.all_shortcuts = list(training_data.unique_shortcuts)
-    results.graph_distances = dict(graph_distances)
-
-    # Compute and store true distances (only for environments that support it)
-    from tamp_improv.benchmarks.gridworld_continuous import GridworldContinuousTAMPSystem
-    if isinstance(system, GridworldContinuousTAMPSystem):
-        print("Computing true distances for all node pairs...")
-        results.true_distances = _extract_true_distances(system, training_data)
-    else:
-        print("Skipping true distance computation (not supported for this environment)")
+        # Store serializable pre-training data
+        node_atoms_ser, node_states_ser = _extract_node_data(training_data)
+        results.node_atoms = node_atoms_ser
+        results.node_states = node_states_ser
+        results.unique_shortcuts = list(training_data.unique_shortcuts)
+        results.all_shortcuts = list(training_data.unique_shortcuts)
+        results.graph_distances = dict(graph_distances)
         results.true_distances = {}
 
-    # Create heuristic instance based on config
-    start = time.time()
-    # Retrieve heuristic_config here to ensure it's available for conditional WandB logging
-    if cfg.heuristic.type == "crl":
-        heuristic_config = dataclass_from_cfg(CRLHeuristicConfig, cfg.heuristic)
-    elif cfg.heuristic.type == "dqn":
-        heuristic_config = dataclass_from_cfg(DQNHeuristicConfig, cfg.heuristic.dqn)
-    elif cfg.heuristic.type == "cmd":
-        heuristic_config = dataclass_from_cfg(CMDHeuristicConfig, cfg.heuristic)
-    else:
-        heuristic_config = None
-
-    heuristic = create_heuristic(
-        training_data=copy.deepcopy(training_data),
-        graph_distances=graph_distances,
-        system=copy.deepcopy(system),
-        cfg=cfg,
-        rng=rng,
-        first_edge_dict=first_edge_dict,
-    )
-
-    # Stage 2: Train heuristic
-    if cfg.heuristic.max_shortcuts_per_graph is None or cfg.heuristic.max_shortcuts_per_graph > 0:
-        print("STAGE 2: TRAIN HEURISTIC")
-        results.training_rounds = train_heuristic(
-            heuristic=heuristic,
-            cfg=cfg
+        # Create heuristic and load trained weights
+        heuristic = create_heuristic(
+            training_data=copy.deepcopy(training_data),
+            graph_distances=graph_distances,
+            system=copy.deepcopy(system),
+            cfg=cfg,
+            rng=rng,
+            first_edge_dict=first_edge_dict,
         )
-    else:
-        print("STAGE 2: SKIP HEURISTIC TRAINING (max_shortcuts_per_graph is 0 or None)")
+        heuristic_path = resume_path / "heuristic"
+        if heuristic_path.exists() and hasattr(heuristic, "load"):
+            print(f"  Loading trained heuristic from {heuristic_path}")
+            heuristic.load(str(heuristic_path))
+        else:
+            raise FileNotFoundError(f"No heuristic checkpoint at {heuristic_path}")
 
-    times["heuristic_training_time"] = time.time() - start
+        # Load previous results to carry over training metrics
+        prev_results_path = resume_path / "results.pkl"
+        if prev_results_path.exists():
+            print(f"  Loading previous results from {prev_results_path}")
+            with open(prev_results_path, "rb") as f:
+                prev_results = pickle.load(f)
+            results.training_rounds = getattr(prev_results, "training_rounds", [])
+            results.true_distances = getattr(prev_results, "true_distances", {})
+            results.latent_embeddings = getattr(prev_results, "latent_embeddings", None)
+        else:
+            results.training_rounds = []
+
+        # Extract heuristic metrics from the loaded heuristic (distance estimates, gains, etc.)
+        results.training_rounds.append(
+            _extract_heuristic_round_data(heuristic, training_data)
+        )
+
+        print("  Skipping Stages 1-2, resuming at Stage 3 (pruning)")
+        times["collection_time"] = 0.0
+        times["heuristic_training_time"] = 0.0
+
+    if not resume_path:
+        # Stage 1: Collect training data
+        print("STAGE 1: COLLECT TRAINING DATA")
+        start = time.time()
+        if cfg.collection.load_data:
+            if cfg.collection.training_data_path is None:
+                raise ValueError("load_data=True but training_data_path is not set in config")
+            data_path = Path(cfg.collection.training_data_path)
+            if not data_path.exists():
+                raise FileNotFoundError(
+                    f"load_data=True but training data not found at: {data_path}"
+                )
+            print(f"Loading training data from {data_path} ...")
+            training_data = GoalConditionedTrainingData.load(data_path)
+            graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
+            first_edge_dict = compute_first_edge_dict(training_data.graph)
+            g = training_data.graph
+            num_nodes = len(g.nodes) if g else 0
+            num_edges = len(g.edges) if g else 0
+            total_states = sum(
+                (len(v) if isinstance(v, list) else 1)
+                for v in training_data.node_states.values()
+            )
+            print(f"  Graph:            {num_nodes} nodes, {num_edges} edges")
+            print(f"  Node states:      {len(training_data.node_states)} nodes with states ({total_states} total states)")
+            print(f"  Unique shortcuts: {len(training_data.unique_shortcuts)}")
+            print(f"  Valid shortcuts:  {len(training_data.valid_shortcuts)} (with per-state duplicates)")
+            print(f"  Node atoms:       {len(training_data.node_atoms)} nodes with atoms")
+        else:
+            training_data, graph_distances, first_edge_dict = collect_training_data(
+                system=system,
+                approach=approach,
+                cfg=cfg,
+                rng=rng,
+            )
+            if cfg.collection.training_data_path is not None:
+                data_path = Path(cfg.collection.training_data_path)
+                data_path.mkdir(parents=True, exist_ok=True)
+                training_data.save(data_path)
+                print(f"Saved training data to {data_path}")
+        times["collection_time"] = time.time() - start
+
+        # Checkpoint: save training data so collection doesn't need to be re-run
+        if ckpt_dir:
+            td_path = ckpt_dir / "training_data"
+            td_path.mkdir(parents=True, exist_ok=True)
+            training_data.save(td_path)
+            with open(ckpt_dir / "graph_distances.pkl", "wb") as f:
+                pickle.dump(graph_distances, f)
+            with open(ckpt_dir / "first_edge_dict.pkl", "wb") as f:
+                pickle.dump(first_edge_dict, f)
+            print(f"[CKPT] Saved Stage 1 training data to {ckpt_dir}")
+
+        # Store serializable pre-training data
+        node_atoms_ser, node_states_ser = _extract_node_data(training_data)
+        results.node_atoms = node_atoms_ser
+        results.node_states = node_states_ser
+        results.unique_shortcuts = list(training_data.unique_shortcuts)
+        results.all_shortcuts = list(training_data.unique_shortcuts)
+        results.graph_distances = dict(graph_distances)
+
+        # Compute and store true distances (only for environments that support it)
+        from tamp_improv.benchmarks.gridworld_continuous import GridworldContinuousTAMPSystem
+        if isinstance(system, GridworldContinuousTAMPSystem):
+            print("Computing true distances for all node pairs...")
+            results.true_distances = _extract_true_distances(system, training_data)
+        else:
+            print("Skipping true distance computation (not supported for this environment)")
+            results.true_distances = {}
+
+        # Create heuristic instance based on config
+        start = time.time()
+        if cfg.heuristic.type == "crl":
+            heuristic_config = dataclass_from_cfg(CRLHeuristicConfig, cfg.heuristic)
+        elif cfg.heuristic.type == "dqn":
+            heuristic_config = dataclass_from_cfg(DQNHeuristicConfig, cfg.heuristic.dqn)
+        elif cfg.heuristic.type == "cmd":
+            heuristic_config = dataclass_from_cfg(CMDHeuristicConfig, cfg.heuristic)
+        else:
+            heuristic_config = None
+
+        heuristic = create_heuristic(
+            training_data=copy.deepcopy(training_data),
+            graph_distances=graph_distances,
+            system=copy.deepcopy(system),
+            cfg=cfg,
+            rng=rng,
+            first_edge_dict=first_edge_dict,
+        )
+
+        # Stage 2: Train heuristic
+        if cfg.heuristic.max_shortcuts_per_graph is None or cfg.heuristic.max_shortcuts_per_graph > 0:
+            print("STAGE 2: TRAIN HEURISTIC")
+            _ckpt_save_fn = None
+            if ckpt_dir and hasattr(heuristic, "save"):
+                _heuristic_ckpt_path = str(ckpt_dir / "heuristic")
+                def _ckpt_save_fn():
+                    heuristic.save(_heuristic_ckpt_path)
+                    print(f"[CKPT] Saved heuristic checkpoint to {_heuristic_ckpt_path}")
+            results.training_rounds = train_heuristic(
+                heuristic=heuristic,
+                cfg=cfg,
+                checkpoint_callback=_ckpt_save_fn,
+            )
+            # Final heuristic save after training completes
+            if ckpt_dir and hasattr(heuristic, "save"):
+                heuristic.save(str(ckpt_dir / "heuristic"))
+                print(f"[CKPT] Saved trained heuristic to {ckpt_dir / 'heuristic'}")
+        else:
+            print("STAGE 2: SKIP HEURISTIC TRAINING (max_shortcuts_per_graph is 0 or None)")
+
+        times["heuristic_training_time"] = time.time() - start
 
     # Extract latent embeddings for visualization (CRL v2 only; None for others)
     if cfg.debug:
@@ -2157,9 +2264,17 @@ def run_pipeline(
     pruned_training_data = prune_with_heuristic(
         heuristic=heuristic,
         max_shortcuts=cfg.heuristic.max_shortcuts_per_graph,
+        use_multi_rl=cfg.policy.use_multi_rl,
     )
     results.pruned_shortcuts = list(pruned_training_data.unique_shortcuts)
     times["heuristic_pruning_time"] = time.time() - start
+
+    # Checkpoint: save pruned training data
+    if ckpt_dir:
+        ptd_path = ckpt_dir / "pruned_training_data"
+        ptd_path.mkdir(parents=True, exist_ok=True)
+        pruned_training_data.save(ptd_path)
+        print(f"[CKPT] Saved pruned training data to {ptd_path}")
 
     # Stage 4: Create policy dictionary (conditionally trains MultiRL if use_multi_rl=True)
     print("STAGE 4: CREATE POLICY DICTIONARY")
@@ -2172,8 +2287,15 @@ def run_pipeline(
         training_data=pruned_training_data,
         cfg=cfg,
         use_multi_rl=use_multi_rl,
+        system_cls=system_cls,
+        system_kwargs=system_kwargs,
     )
     times["policy_training_time"] = time.time() - start
+
+    # Checkpoint: save trained policies
+    if ckpt_dir and use_multi_rl and hasattr(policy, "save"):
+        policy.save(str(ckpt_dir / "multi_rl_policy"))
+        print(f"[CKPT] Saved trained policies to {ckpt_dir / 'multi_rl_policy'}")
 
     import psutil as _psutil
     def _mem_gb() -> str:
@@ -2204,6 +2326,9 @@ def run_pipeline(
             training_data=pruned_training_data,
             cfg=cfg,
         )
+
+    if shortcut_quality_results is not None:
+        results.shortcut_quality_results = shortcut_quality_results["pairs"]
 
     # Update the approach's system with the new graph containing shortcuts for evaluation
     approach.update_system(virtual_system)
