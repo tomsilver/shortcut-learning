@@ -476,8 +476,34 @@ class DSACv2Heuristic(BaseHeuristic):
         achieved_vec = self.create_atom_vector(achieved_atoms)
         state_flat = self._flatten_state(current_state)
 
+        # Cache the skill for base actions if residualizing
+        _base_skill = None
+        if self.config.residualize and self.first_edge_dict is not None:
+            source_atoms = self._node_atoms_dict.get(source_id, set())
+            edge = self.first_edge_dict.get(
+                (frozenset(source_atoms), frozenset(target_atoms)), None
+            )
+            if edge is not None:
+                operator = edge.operator
+                skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
+                if skills:
+                    _base_skill = skills[0]
+                    _base_skill.reset(operator)
+
         for step in range(self.config.max_episode_steps):
-            action = self._select_action(state_flat, goal_vec, deterministic=False)
+            # Compute base action for residualization
+            base_action = None
+            if _base_skill is not None:
+                try:
+                    raw_action = _base_skill.get_action(current_state)
+                    if raw_action is not None:
+                        base_action = np.array(raw_action, dtype=np.float32)
+                except Exception:
+                    pass
+                if base_action is None:
+                    base_action = np.zeros(self.action_dim, dtype=np.float32)
+
+            action = self._select_action(state_flat, goal_vec, deterministic=False, base_action=base_action)
 
             next_state, _, terminated, truncated, _ = env.step(action)
             next_flat = self._flatten_state(next_state)
@@ -518,11 +544,19 @@ class DSACv2Heuristic(BaseHeuristic):
 
         T = len(trajectory)
 
-        for s, a, r, s_, done, _, _, obs_raw in trajectory:
-            self.replay_buffer.add(s, a, r, s_, done, goal_vec, obs_raw, target_id, source_id)
+        # Real transitions — use per-step source node (not trajectory-level source_id)
+        for s, a, r, s_, done, achieved_vec, _, obs_raw in trajectory:
+            step_source_id = self._find_node_for_goal_vec(achieved_vec)
+            if step_source_id < 0:
+                step_source_id = source_id  # fallback
+            self.replay_buffer.add(s, a, r, s_, done, goal_vec, obs_raw, target_id, step_source_id)
 
+        # HER transitions
         for t in range(T):
-            s, a, _, s_, done, _, next_achieved_vec, obs_raw = trajectory[t]
+            s, a, _, s_, done, achieved_vec, next_achieved_vec, obs_raw = trajectory[t]
+            step_source_id = self._find_node_for_goal_vec(achieved_vec)
+            if step_source_id < 0:
+                step_source_id = source_id  # fallback
 
             if self.config.her_strategy == "final":
                 her_indices = [T - 1]
@@ -538,17 +572,22 @@ class DSACv2Heuristic(BaseHeuristic):
                 her_r = 0.0 if np.all(next_achieved_vec[goal_atoms_active] > 0.5) else -1.0
                 her_done = her_r == 0.0 or done
                 self.replay_buffer.add(
-                    s, a, her_r, s_, her_done, her_goal_vec, obs_raw, her_goal_node_id, source_id
+                    s, a, her_r, s_, her_done, her_goal_vec, obs_raw, her_goal_node_id, step_source_id
                 )
 
     def _select_action(
-        self, state_flat: NDArray, goal_vec: NDArray, deterministic: bool = False
+        self, state_flat: NDArray, goal_vec: NDArray, deterministic: bool = False,
+        base_action: NDArray | None = None,
     ) -> NDArray:
         device = torch.device(self.config.device)
         with torch.no_grad():
             s_t = torch.FloatTensor(state_flat).unsqueeze(0).to(device)
             g_t = torch.FloatTensor(goal_vec).unsqueeze(0).to(device)
-            action, _ = self.actor.sample(s_t, g_t, deterministic=deterministic)
+            if base_action is not None:
+                base_t = torch.FloatTensor(base_action).unsqueeze(0).to(device)
+                action, _ = self.actor.sample(s_t, g_t, base_t, deterministic=deterministic)
+            else:
+                action, _ = self.actor.sample(s_t, g_t, deterministic=deterministic)
         return action.squeeze(0).cpu().numpy()
 
     # ── Distributional helpers ────────────────────────────────────────
@@ -594,7 +633,7 @@ class DSACv2Heuristic(BaseHeuristic):
         """One DSAC gradient step. Returns (critic_loss, actor_loss)."""
         device = torch.device(self.config.device)
 
-        states, actions, rewards, next_states, dones, goals, _, goal_node_ids, source_node_ids = (
+        states, actions, rewards, next_states, dones, goals, obs_raws, goal_node_ids, source_node_ids = (
             self.replay_buffer.sample(self.config.batch_size)
         )
         s = torch.FloatTensor(states).to(device)
@@ -607,7 +646,7 @@ class DSACv2Heuristic(BaseHeuristic):
         alpha = self.log_alpha.exp().detach()
 
         if isinstance(self.actor, ResidualContinuousActor):
-            base_actions_np = self._get_base_actions_batch(source_node_ids, goal_node_ids)
+            base_actions_np = self._get_base_actions_batch(source_node_ids, goal_node_ids, obs_raws)
             base_actions_tensor = torch.FloatTensor(base_actions_np).to(device)
         else:
             base_actions_tensor = None
@@ -694,6 +733,7 @@ class DSACv2Heuristic(BaseHeuristic):
         self,
         source_node_ids: NDArray,
         goal_node_ids: NDArray,
+        obs_raws: list | None = None,
     ) -> NDArray:
         batch_size = len(source_node_ids)
         base_actions = np.zeros((batch_size, self.action_dim), dtype=np.float32)
@@ -720,7 +760,11 @@ class DSACv2Heuristic(BaseHeuristic):
                 continue
             skill.reset(operator)
             try:
-                action = skill.get_action(edge.source.state)
+                obs = obs_raws[i] if obs_raws is not None else None
+                if obs is None:
+                    action = None
+                else:
+                    action = skill.get_action(obs)
             except Exception:
                 action = None
             if action is not None:

@@ -439,14 +439,14 @@ class ResidualContinuousActor(nn.Module):
         mean, log_std = self._compute_params(states, goal_atom_vectors, base_actions)
 
         if deterministic:
-            # return base_actions + torch.tanh(mean), None
             return torch.tanh(mean), None
 
         std = log_std.exp()
         x_t = torch.distributions.Normal(mean, std).rsample()
         residual = torch.tanh(x_t)
-        # action = base_actions + residual
-        action = residual
+        print("THE REAL RESIDUAL")
+        action = base_actions + residual
+        # action = residual
 
         log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
         log_prob -= torch.log(1 - residual.pow(2) + 1e-6)
