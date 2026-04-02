@@ -27,7 +27,7 @@ CODE_DIR="/n/fs/iterativesl/shortcut-learning"
 SCRATCH_DIR="/n/fs/iterativesl/slap_outputs"
 CONDA_ENV="/n/fs/iterativesl/slap_env_2"
 SLURM_TIME="04:00:00"
-SLURM_CPUS=20
+SLURM_CPUS=90
 SLURM_MEM="32G"
 DEFAULT_CONFIG="gridworld_continuous"
 # ─────────────────────────────────────────────────────────────────────────────
@@ -121,7 +121,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     # Build resource directives depending on gpu= flag
     if [ "$USE_GPU" = "true" ] || [ "$USE_GPU" = "mig" ]; then
         RESOURCE_LINES="#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=${SLURM_CPUS}
+#SBATCH --cpus-per-task=1
 #SBATCH --mem=${SLURM_MEM}
 #SBATCH --gres=gpu:1"
     else

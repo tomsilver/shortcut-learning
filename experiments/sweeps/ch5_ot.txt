@@ -6,11 +6,11 @@
 # Lines starting with # and blank lines are ignored.
 
 # -- obstacle_tower config ----------
-name=ot_pure_plan_ch5       config=obstacle_tower  heuristic.type=none  heuristic.max_shortcuts_per_graph=0    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42
-name=ot_none_ch5      config=obstacle_tower  heuristic.type=none    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42
-name=ot_routs_ch5     config=obstacle_tower  heuristic.type=rollouts    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42
-name=ot_srouts_ch5    config=obstacle_tower  heuristic.type=smart_rollouts  policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42
-name=ot_sac_ch5       config=obstacle_tower  heuristic.type=sac_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42 heuristic.sac.num_epochs_per_round=3450 heuristic.sac.auto_dist_scale=false
-name=ot_crl_ch5       config=obstacle_tower  heuristic.type=crl_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42 heuristic.crl.num_epochs_per_round=3450
-name=ot_cmd_ch5       config=obstacle_tower  heuristic.type=cmd_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42 heuristic.crl.num_epochs_per_round=3450
-name=ot_dsac_ch5       config=obstacle_tower  heuristic.type=dsac_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=119:59:00  seeds=42 heuristic.sac.num_epochs_per_round=3450
+name=ot_pure_plan_ch5       config=obstacle_tower  heuristic.type=none  heuristic.max_shortcuts_per_graph=0    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42
+name=ot_none_ch5      config=obstacle_tower  heuristic.type=none    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42
+name=ot_routs_ch5     config=obstacle_tower  heuristic.type=rollouts    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42
+name=ot_srouts_ch5    config=obstacle_tower  heuristic.type=smart_rollouts  policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42
+name=ot_sac_ch5       config=obstacle_tower  heuristic.type=sac_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42 heuristic.sac.num_epochs_per_round=3450 heuristic.sac.auto_dist_scale=false
+name=ot_crl_ch5       config=obstacle_tower  heuristic.type=crl_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42 heuristic.crl.num_epochs_per_round=3450
+name=ot_cmd_ch5       config=obstacle_tower  heuristic.type=cmd_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42 heuristic.crl.num_epochs_per_round=3450
+name=ot_dsac_ch5       config=obstacle_tower  heuristic.type=dsac_v2    policy.use_multi_rl=true  debug=false  gpu=false  overwrite=true  time=167:00:00  seeds=42 heuristic.sac.num_epochs_per_round=3450

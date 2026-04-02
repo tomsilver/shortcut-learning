@@ -1484,11 +1484,16 @@ class CMDv2Heuristic(BaseHeuristic):
                 dist = self.estimate_node_distance(source_id, target_id)
                 shortcut_dists[source_id, target_id] = dist
 
-            ratios = shortcut_dists / self.original_node_pair_graph_dists
+            ratios = shortcut_dists / (self.original_node_pair_graph_dists + 1e-8)
+            valid = np.isfinite(ratios) & (self.original_node_pair_graph_dists > 0)
+
             q = self.config.dist_quantile
-            ratio = 1 / np.quantile(ratios[np.isfinite(ratios)], q)
-            if ratio < 1:
-                self.config.dist_scale = ratio
+            if valid.any():
+                ratio = 1 / np.quantile(ratios[valid], q)
+                if not np.isinf(ratio) and ratio > 0:
+                    self.config.dist_scale = ratio if ratio < 1 else 1.0
+                else:
+                    self.config.dist_scale = 1.0
             else:
                 self.config.dist_scale = 1.0
 

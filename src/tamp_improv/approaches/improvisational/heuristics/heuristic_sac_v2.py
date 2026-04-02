@@ -1067,20 +1067,20 @@ class SACv2Heuristic(BaseHeuristic):
                 self._add_to_buffer_with_her(trajectory, goal_vec, target_id, source_id)
 
                 # Check if this pair just crossed the graduation threshold
-                    pair = (source_id, target_id)
-                    if self._graduation_cooldown.get(pair, 0) > 0:
-                        self._graduation_cooldown[pair] -= 1
-                    else:
-                        successes = self.node_pair_successes.get(pair, [])
-                        k = self.config.num_reliability_trials
-                        if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
-                            print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
-                            if graduate_fn is not None:
-                                graduate_fn(self, source_id, target_id)
-                            self._update_graph_distances(source_id, target_id)
-                            self._update_first_edge_dict(source_id, target_id)
-                            self._update_gains()
-                            self._graduation_cooldown[pair] = k
+                pair = (source_id, target_id)
+                if self._graduation_cooldown.get(pair, 0) > 0:
+                    self._graduation_cooldown[pair] -= 1
+                else:
+                    successes = self.node_pair_successes.get(pair, [])
+                    k = self.config.num_reliability_trials
+                    if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
+                        print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
+                        if graduate_fn is not None:
+                            graduate_fn(self, source_id, target_id)
+                        self._update_graph_distances(source_id, target_id)
+                        self._update_first_edge_dict(source_id, target_id)
+                        self._update_gains()
+                        self._graduation_cooldown[pair] = k
 
             if (epoch + 1) % self.config.learn_frequency == 0:
                 if len(self.replay_buffer) >= self.config.batch_size:

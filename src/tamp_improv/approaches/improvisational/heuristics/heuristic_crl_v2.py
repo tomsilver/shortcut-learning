@@ -1174,6 +1174,7 @@ class CRLv2Heuristic(BaseHeuristic):
 
         pruned_pairs = []
 
+        prev_auto = self.config.auto_dist_scale
         self.config.auto_dist_scale = False
 
         for i in range(max_shortcuts):
@@ -1209,7 +1210,7 @@ class CRLv2Heuristic(BaseHeuristic):
 
             print(f"  Selected shortcut {i+1}: {source_id} -> {target_id} (gain={gains[max_idx]:.2f}, p={p:.2f}, score={scores[max_idx]:.2f})")
 
-        self.config.auto_dist_scale = True
+        self.config.auto_dist_scale = prev_auto
         self.node_pair_gains = curr_gains
         self.node_pair_graph_dists = curr_dists
         

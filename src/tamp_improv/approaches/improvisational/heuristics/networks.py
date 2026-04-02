@@ -475,13 +475,14 @@ class ResidualContinuousActor(nn.Module):
 
         mean, log_std = self._compute_params(states, goal_atom_vectors, base_actions)
 
+        lam = 1.0  # Scaling factor for residual; can be tuned or annealed
         if deterministic:
-            return self._clip(base_actions + self._rescale(torch.tanh(mean))), None
+            return self._clip(lam * base_actions + self._rescale(torch.tanh(mean))), None
 
         std = log_std.exp()
         x_t = torch.distributions.Normal(mean, std).rsample()
         residual = torch.tanh(x_t)
-        action = self._clip(base_actions + self._rescale(residual))
+        action = self._clip(lam * base_actions + self._rescale(residual))
 
         log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
         log_prob -= torch.log(1 - residual.pow(2) + 1e-6)
