@@ -444,7 +444,7 @@ class ResidualContinuousActor(nn.Module):
         std = log_std.exp()
         x_t = torch.distributions.Normal(mean, std).rsample()
         residual = torch.tanh(x_t)
-        print("THE REAL RESIDUAL")
+        # print("THE REAL RESIDUAL")
         action = base_actions + residual
         # action = residual
 

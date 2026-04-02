@@ -24,14 +24,14 @@ collection:
   planner_id: pyperplan
   num_cost_rollouts: 100
   load_data: true
-  training_data_path: /n/fs/recbench/training_data/cluttered_drawer
+  training_data_path: /n/fs/iterativesl/training_data/cluttered_drawer
 
 heuristic:
   # Heuristic Parameters
   type: crl_v2
 
   # Pruning Parameters
-  max_shortcuts_per_graph: 10
+  max_shortcuts_per_graph: 70
 
   # Multi-train parameters
   num_rounds: 1
@@ -52,6 +52,9 @@ heuristic:
     dist_scale: 1.0
     dist_quantile: 0.9
 
+
+
+  # Epochs = 1700 in ch5, 4500 in ch6/7
   # CRL Heuristic Parameters (both v1 and v2)
   crl:
     hidden_dims: [64, 64]
@@ -133,7 +136,7 @@ heuristic:
 
     num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
 
-# M = 400 * 10 * 10 = 40000
+# M = 40 episodes per scenario * 10 scenarios * 70 shortcuts = 28000
 policy:
   use_multi_rl: false
 
@@ -148,10 +151,10 @@ policy:
   early_stopping: true
   early_stopping_patience: 10
   max_episode_steps: 500
-  episodes_per_scenario: 400
+  episodes_per_scenario: 40 #we lower this cuz we accidentally collected 10x data
   training_record_interval: 100
 
-  num_parallel_workers: 0
+  num_parallel_workers: 20
 
   eval_rollouts: 10
 

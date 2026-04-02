@@ -663,9 +663,9 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
             sorted(str(a) for a in node.atoms) for node in goal_nodes
         ]
 
-        print("Initial node:", initial_node)
-        print("Initial obs:", obs)
-        print("Goal nodes:", goal_nodes)
+        # print("Initial node:", initial_node)
+        # print("Initial obs:", obs)
+        # print("Goal nodes:", goal_nodes)
 
         if not goal_nodes:
             print("No goal nodes found in planning graph")

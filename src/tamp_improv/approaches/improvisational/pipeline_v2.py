@@ -2133,8 +2133,18 @@ def run_pipeline(
                 )
             print(f"Loading training data from {data_path} ...")
             training_data = GoalConditionedTrainingData.load(data_path)
-            graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
-            first_edge_dict = compute_first_edge_dict(training_data.graph)
+            gd_path = data_path / "graph_distances.pkl"
+            fed_path = data_path / "first_edge_dict.pkl"
+            if gd_path.exists() and fed_path.exists():
+                print("Loading precomputed graph_distances and first_edge_dict ...")
+                with open(gd_path, "rb") as f:
+                    graph_distances = pickle.load(f)
+                with open(fed_path, "rb") as f:
+                    first_edge_dict = pickle.load(f)
+            else:
+                print("Computing graph_distances and first_edge_dict (no cached files found) ...")
+                graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
+                first_edge_dict = compute_first_edge_dict(training_data.graph)
             g = training_data.graph
             num_nodes = len(g.nodes) if g else 0
             num_edges = len(g.edges) if g else 0

@@ -24,7 +24,7 @@ collection:
   planner_id: pyperplan
   num_cost_rollouts: 100
   load_data: false
-  training_data_path: /n/fs/recbench/training_data/cluttered_drawer
+  training_data_path: /n/fs/iterativesl/training_data/cluttered_drawer
 
 heuristic:
   # Heuristic Parameters

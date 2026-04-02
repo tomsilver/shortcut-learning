@@ -174,6 +174,7 @@ class MultiRLPolicy(Policy[ObsType, ActType]):
                     relevant_objects=relevant_objects,
                     obs_space_shape=obs_space_shape,
                     group_data=group_data,
+                    max_episode_steps=self.config.max_episode_steps,
                 )
             else:
                 # Build env directly for sequential training
@@ -483,12 +484,14 @@ class EnvFactory:
         relevant_objects: set[str] | None,
         obs_space_shape: tuple | None,
         group_data: TrainingData,
+        max_episode_steps: int | None = None,
     ):
         self.system_cls = system_cls
         self.system_kwargs = system_kwargs
         self.relevant_objects = relevant_objects
         self.obs_space_shape = obs_space_shape
         self.group_data = group_data
+        self.max_episode_steps = max_episode_steps
 
     def __call__(self) -> gym.Env:
         """Create a fresh environment in the current process."""
@@ -511,11 +514,13 @@ class EnvFactory:
                 low=-np.inf, high=np.inf, shape=self.obs_space_shape, dtype=np.float32,
             )
 
-        # Configure training data on the env
+        # Configure training data and max_episode_steps on the env
         current = env
         while current is not None:
             if hasattr(current, "configure_training"):
                 current.configure_training(self.group_data)
+            if self.max_episode_steps is not None and hasattr(current, "max_episode_steps"):
+                current.max_episode_steps = self.max_episode_steps
             current = getattr(current, "env", None)
 
         return env

@@ -19,3 +19,15 @@ name=crl_1000      config=gridworld_continuous  time=08:00:00  gpu=false  heuris
 # ── unit_test config ──────────────────────────────────────────────────────────
 name=ut_sac        config=unit_test             time=01:00:00  gpu=false  heuristic.type=sac_v2  seed=1
 name=ut_none       config=unit_test             time=01:00:00  gpu=false  heuristic.type=none    seed=1
+
+
+cd /n/fs/iterativesl/shortcut-learning && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch5_cd.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch5_ct.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch5_ot.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch6_cd.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch6_ct.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch6_ot.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch7_cd.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch7_ct.txt && \
+bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch7_ot.txt
