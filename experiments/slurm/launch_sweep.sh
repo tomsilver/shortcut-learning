@@ -69,9 +69,9 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         line="${line/time=${JOB_TIME}/}"
     fi
 
-    # Extract optional gpu=true/false/mig token
+    # Extract optional gpu=true/false/mig/cpu/multi_cpu token
     USE_GPU="false"
-    if [[ "$line" =~ (^|[[:space:]])gpu=(true|false|mig) ]]; then
+    if [[ "$line" =~ (^|[[:space:]])gpu=(true|false|mig|cpu|multi_cpu) ]]; then
         USE_GPU="${BASH_REMATCH[2]}"
         line="${line/gpu=${USE_GPU}/}"
     fi
@@ -124,6 +124,14 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=${SLURM_MEM}
 #SBATCH --gres=gpu:1"
+    elif [ "$USE_GPU" = "cpu" ]; then
+        RESOURCE_LINES="#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=${SLURM_MEM}"
+    elif [ "$USE_GPU" = "multi_cpu" ]; then
+        RESOURCE_LINES="#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=${SLURM_CPUS}
+#SBATCH --mem=${SLURM_MEM}"
     else
         RESOURCE_LINES="#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=${SLURM_CPUS}
@@ -152,6 +160,7 @@ conda activate "${CONDA_ENV}"
 cd "${CODE_DIR}" || exit 1
 export PYTHONPATH="${CODE_DIR}/src:\$PYTHONPATH"
 export HYDRA_FULL_ERROR=1
+export PYTHONUNBUFFERED=1
 
 RUN_DIR="${SCRATCH_DIR}/outputs/sweep_${FULL_NAME}"
 mkdir -p "\$RUN_DIR"

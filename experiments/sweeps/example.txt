@@ -31,3 +31,6 @@ bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch6_ot.txt && \
 bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch7_cd.txt && \
 bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch7_ct.txt && \
 bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch7_ot.txt
+
+
+squeue --me -o "%.10i %.30j %.10M %Z"
