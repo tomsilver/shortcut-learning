@@ -186,33 +186,27 @@ class ContrastiveReplayBuffer:
         actions_list = []
         future_nodes_list = []
         current_nodes_list = []
+        base_actions_list = []
 
         for traj in sampled_trajs:
-            # Repeat this trajectory `repetition_factor` times
             for _ in range(repetition_factor):
                 if len(traj) == 1:
-                    # Special case: trajectory has only one step
-                    obs, action, node = traj[0]
+                    obs, action, node = traj[0][:3]
+                    ba = traj[0][3] if len(traj[0]) > 3 else None
                     obs_list.append(obs)
                     actions_list.append(action)
                     future_nodes_list.append(node)
                     current_nodes_list.append(node)
+                    base_actions_list.append(ba)
                 else:
-                    # Sample current timestep t uniformly
                     t = random.randint(0, len(traj) - 1)
-
-                    # Sample future timestep t' geometrically using gamma
-                    # Probability of sampling k steps ahead: (1-gamma) * gamma^k
-                    max_k = len(traj) - t - 1  # Maximum steps we can go ahead
+                    max_k = len(traj) - t - 1
                     if max_k == 0:
-                        # Already at last step, future = current
                         t_future = t
                     else:
-                        # Geometric distribution
                         probs = [
                             (1 - self.gamma) * (self.gamma**k) for k in range(max_k)
                         ]
-                        # Renormalize if needed
                         probs_sum = sum(probs)
                         if probs_sum > 0:
                             probs = [p / probs_sum for p in probs]
@@ -221,19 +215,27 @@ class ContrastiveReplayBuffer:
                         else:
                             t_future = t + 1
 
-                    obs_t, action_t, node_t = traj[t]
-                    _, _, node_future = traj[t_future]
+                    obs_t, action_t, node_t = traj[t][:3]
+                    ba_t = traj[t][3] if len(traj[t]) > 3 else None
+                    _, _, node_future = traj[t_future][:3]
 
                     obs_list.append(obs_t)
                     actions_list.append(action_t)
                     future_nodes_list.append(node_future)
                     current_nodes_list.append(node_t)
+                    base_actions_list.append(ba_t)
+
+        if any(ba is not None for ba in base_actions_list):
+            ba_array = np.array(base_actions_list, dtype=np.float32)
+        else:
+            ba_array = None
 
         return (
             obs_list,
             np.array(actions_list),
             np.array(future_nodes_list),
             np.array(current_nodes_list),
+            ba_array,
         )
 
     def __len__(self) -> int:
@@ -314,8 +316,14 @@ class CRLv2Heuristic(BaseHeuristic):
         elif isinstance(env.action_space, gym.spaces.Box):
             self.action_space_type = "continuous"
             self.action_dim = int(np.prod(env.action_space.shape))
+            self._action_low = env.action_space.low.astype(np.float32)
+            self._action_high = env.action_space.high.astype(np.float32)
         else:
             raise ValueError(f"Unsupported action space: {type(env.action_space)}")
+
+        if not hasattr(self, '_action_low'):
+            self._action_low = None
+            self._action_high = None
 
         # Number of nodes
         self.num_nodes = len(training_data.node_states)
@@ -477,6 +485,7 @@ class CRLv2Heuristic(BaseHeuristic):
                 action_dim=self.action_dim,
                 atom_dim=self.config.max_atom_size,
                 hidden_dims=self.config.actor_hidden_dims,
+                action_low=self._action_low, action_high=self._action_high,
             ).to(device)
 
     def _init_networks(self) -> None:
@@ -512,6 +521,7 @@ class CRLv2Heuristic(BaseHeuristic):
                 action_dim=self.action_dim,
                 atom_dim=self.config.max_atom_size,
                 hidden_dims=self.config.actor_hidden_dims,
+                action_low=self._action_low, action_high=self._action_high,
             ).to(device)
         else:
             self.actor = ContinuousActor(
@@ -519,6 +529,7 @@ class CRLv2Heuristic(BaseHeuristic):
                 action_dim=self.action_dim,
                 atom_dim=self.config.max_atom_size,
                 hidden_dims=self.config.actor_hidden_dims,
+                action_low=self._action_low, action_high=self._action_high,
             ).to(device)
 
     # def multi_train(self, **kwargs: Any) -> dict[str, Any]:
@@ -595,7 +606,6 @@ class CRLv2Heuristic(BaseHeuristic):
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
-            # Collect trajectories
             for _ in range(self.config.trajectories_per_epoch):
                 trajectory, source_id, target_id = self._collect_trajectory()
                 self.replay_buffer.add_trajectory(trajectory)
@@ -704,10 +714,11 @@ class CRLv2Heuristic(BaseHeuristic):
                 current_node_id = source_id  # Fallback to source
 
             # Select action using actor; pass current_atoms to avoid second perceiver call
+            base_action = self._get_base_action(current_state, target_id)
             action = self.get_action(current_state, target_id, current_atoms=current_atoms)
 
-            # Store (obs, action, node_id); state_flat computed on demand from obs
-            trajectory.append((current_state, action, current_node_id))
+            # Store (obs, action, node_id, base_action)
+            trajectory.append((current_state, action, current_node_id, base_action))
 
             # Check if reached goal
             if current_node_id == target_id:
@@ -855,7 +866,7 @@ class CRLv2Heuristic(BaseHeuristic):
         device = torch.device(self.config.device)
 
         # Sample batch from replay buffer (obs_list contains raw observations)
-        obs_list, actions, future_nodes, current_nodes = self.replay_buffer.sample_batch_crtr(
+        obs_list, actions, future_nodes, current_nodes, cached_base_actions = self.replay_buffer.sample_batch_crtr(
             batch_size=self.config.batch_size,
             repetition_factor=self.config.repetition_factor,
         )
@@ -915,10 +926,9 @@ class CRLv2Heuristic(BaseHeuristic):
         # === Update Actor ===
         self.actor_optimizer.zero_grad()
 
-        # Compute live base actions for this batch (using current skill policy)
-        if isinstance(self.actor, ResidualContinuousActor):
-            base_actions_np = self._get_base_actions_batch(obs_list, current_nodes, future_nodes)
-            base_actions_tensor = torch.FloatTensor(base_actions_np).to(device)
+        # Use cached base actions from buffer
+        if isinstance(self.actor, ResidualContinuousActor) and cached_base_actions is not None:
+            base_actions_tensor = torch.FloatTensor(cached_base_actions).to(device)
         else:
             base_actions_tensor = None
 

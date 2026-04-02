@@ -9,6 +9,8 @@ interfaces defined here) is automatically compatible with
 
 from typing import Callable
 
+import numpy as np
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -261,6 +263,8 @@ class ContinuousActor(nn.Module):
         hidden_dims: list[int] | None = None,
         log_std_min: float = -20,
         log_std_max: float = 2,
+        action_low: np.ndarray | None = None,
+        action_high: np.ndarray | None = None,
     ):
         super().__init__()
         self.state_dim = state_dim
@@ -268,6 +272,13 @@ class ContinuousActor(nn.Module):
         self.atom_dim = atom_dim
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
+        # Action space bounds for rescaling tanh output from (-1,1) to (low,high)
+        if action_low is not None and action_high is not None:
+            self.register_buffer("action_low", torch.FloatTensor(action_low))
+            self.register_buffer("action_high", torch.FloatTensor(action_high))
+        else:
+            self.action_low = None
+            self.action_high = None
 
         if hidden_dims is None:
             hidden_dims = [64, 64]
@@ -290,6 +301,12 @@ class ContinuousActor(nn.Module):
         log_std = torch.clamp(self.log_std_head(features), self.log_std_min, self.log_std_max)
         return mean, log_std
 
+    def _rescale(self, tanh_action: torch.Tensor) -> torch.Tensor:
+        """Rescale action from (-1, 1) to (action_low, action_high)."""
+        if self.action_low is None:
+            return tanh_action
+        return self.action_low + (tanh_action + 1) * 0.5 * (self.action_high - self.action_low)
+
     def sample(
         self,
         states: torch.Tensor,
@@ -298,13 +315,13 @@ class ContinuousActor(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         mean, log_std = self.forward(states, goal_atom_vectors)
         if deterministic:
-            return torch.tanh(mean), None
+            return self._rescale(torch.tanh(mean)), None
         std = log_std.exp()
         x_t = torch.distributions.Normal(mean, std).rsample()
         action = torch.tanh(x_t)
         log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
         log_prob -= torch.log(1 - action.pow(2) + 1e-6)
-        return action, log_prob.sum(dim=-1)
+        return self._rescale(action), log_prob.sum(dim=-1)
 
 
 class DistributionalQNetwork(nn.Module):
@@ -375,6 +392,8 @@ class ResidualContinuousActor(nn.Module):
         hidden_dims: list[int] | None = None,
         log_std_min: float = -20,
         log_std_max: float = 2,
+        action_low: np.ndarray | None = None,
+        action_high: np.ndarray | None = None,
     ):
         super().__init__()
         self.state_dim = state_dim
@@ -382,6 +401,12 @@ class ResidualContinuousActor(nn.Module):
         self.atom_dim = atom_dim
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
+        if action_low is not None and action_high is not None:
+            self.register_buffer("action_low", torch.FloatTensor(action_low))
+            self.register_buffer("action_high", torch.FloatTensor(action_high))
+        else:
+            self.action_low = None
+            self.action_high = None
 
         if hidden_dims is None:
             hidden_dims = [64, 64]
@@ -426,6 +451,18 @@ class ResidualContinuousActor(nn.Module):
         base_actions = torch.zeros(states.shape[0], self.action_dim, device=states.device)
         return self._compute_params(states, goal_atom_vectors, base_actions)
 
+    def _rescale(self, tanh_action: torch.Tensor) -> torch.Tensor:
+        """Rescale from (-1, 1) to (action_low, action_high), same as ContinuousActor."""
+        if self.action_low is None:
+            return tanh_action
+        return self.action_low + (tanh_action + 1) * 0.5 * (self.action_high - self.action_low)
+
+    def _clip(self, action: torch.Tensor) -> torch.Tensor:
+        """Clip action to (action_low, action_high)."""
+        if self.action_low is None:
+            return action
+        return torch.clamp(action, self.action_low, self.action_high)
+
     def sample(
         self,
         states: torch.Tensor,
@@ -439,14 +476,12 @@ class ResidualContinuousActor(nn.Module):
         mean, log_std = self._compute_params(states, goal_atom_vectors, base_actions)
 
         if deterministic:
-            return torch.tanh(mean), None
+            return self._clip(base_actions + self._rescale(torch.tanh(mean))), None
 
         std = log_std.exp()
         x_t = torch.distributions.Normal(mean, std).rsample()
         residual = torch.tanh(x_t)
-        print("THE REAL RESIDUAL")
-        action = base_actions + residual
-        # action = residual
+        action = self._clip(base_actions + self._rescale(residual))
 
         log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
         log_prob -= torch.log(1 - residual.pow(2) + 1e-6)
