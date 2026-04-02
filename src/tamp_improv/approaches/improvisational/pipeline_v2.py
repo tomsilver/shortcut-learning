@@ -323,6 +323,7 @@ def create_heuristic(
         crl_v2_config = dataclass_from_cfg(CRLV2HeuristicConfig, cfg.heuristic.crl)
         crl_v2_config.wandb_enabled = cfg.wandb_enabled
         crl_v2_config.device = "cuda" if torch.cuda.is_available() else "cpu"
+
         print("CRL V2 Config:", crl_v2_config)
 
         return CRLv2Heuristic(
@@ -350,6 +351,7 @@ def create_heuristic(
         sac_v2_config = dataclass_from_cfg(SACV2HeuristicConfig, cfg.heuristic.sac)
         sac_v2_config.wandb_enabled = cfg.wandb_enabled
         sac_v2_config.device = "cuda" if torch.cuda.is_available() else "cpu"
+
         print("SAC V2 Config:", sac_v2_config)
 
         return SACv2Heuristic(
@@ -364,6 +366,7 @@ def create_heuristic(
         dsac_v2_config = dataclass_from_cfg(DSACv2HeuristicConfig, cfg.heuristic.sac)
         dsac_v2_config.wandb_enabled = cfg.wandb_enabled
         dsac_v2_config.device = "cuda" if torch.cuda.is_available() else "cpu"
+
         print("DSAC V2 Config:", dsac_v2_config)
 
         return DSACv2Heuristic(
@@ -393,6 +396,7 @@ def create_heuristic(
         cmd_config = dataclass_from_cfg(CMDV2HeuristicConfig, cfg.heuristic.crl)
         cmd_config.wandb_enabled = cfg.wandb_enabled
         cmd_config.device = "cuda" if torch.cuda.is_available() else "cpu"
+
 
         print("CMD V2 Config:", cmd_config)
         return CMDv2Heuristic(
