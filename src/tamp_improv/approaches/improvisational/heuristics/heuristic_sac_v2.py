@@ -669,7 +669,7 @@ class SACv2Heuristic(BaseHeuristic):
         with torch.no_grad():
             s_t = torch.FloatTensor(state_flat).unsqueeze(0).to(device)
             g_t = torch.FloatTensor(goal_vec).unsqueeze(0).to(device)
-            if base_action is not None:
+            if isinstance(self.actor, ResidualContinuousActor) and base_action is not None:
                 base_t = torch.FloatTensor(base_action).unsqueeze(0).to(device)
                 action, _ = self.actor.sample(s_t, g_t, base_t, deterministic=deterministic)
             else:
