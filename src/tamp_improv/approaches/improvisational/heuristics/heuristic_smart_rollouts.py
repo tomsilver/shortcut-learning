@@ -186,7 +186,7 @@ class SmartRolloutsHeuristic(BaseHeuristic):
     def estimate_node_distance(self, source_node: int, target_node: int) -> float:
         """Return mean rollout success length, or max_steps if never reached."""
         if self._success_lens is None:
-            raise RuntimeError("Must call train_one_round() before estimate_node_distance()")
+            return float(self.config.max_steps_per_rollout)
         lengths = self._success_lens.get((source_node, target_node), [])
         if lengths:
             return self.config.dist_scale * float(np.mean(lengths))
@@ -288,7 +288,8 @@ class SmartRolloutsHeuristic(BaseHeuristic):
     ) -> "GoalConditionedTrainingData":
         """Keep shortcuts whose rollout success rate exceeds the threshold."""
         if self._success_counts is None:
-            raise RuntimeError("Must call train_one_round() before prune_by_success()")
+            self._success_counts = {}
+            self._success_lens = {}
 
         print("Rollout success rates for all shortcuts:")
         pruned_pairs = []
@@ -304,7 +305,8 @@ class SmartRolloutsHeuristic(BaseHeuristic):
     def prune(self, max_shortcuts: int | None, **kwargs: Any) -> "GoalConditionedTrainingData":
         """Greedy gain-based pruning, identical to sac_v2."""
         if self._success_lens is None:
-            raise RuntimeError("Must call train_one_round() before prune()")
+            self._success_counts = {}
+            self._success_lens = {}
 
         print(f"\nPruning greedily to max_shortcuts={max_shortcuts}")
 

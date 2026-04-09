@@ -102,7 +102,7 @@ heuristic:
     actor_hidden_dims: [64, 64]
     batch_size: 64
     buffer_size: 100000
-    gamma: 0.99
+    gamma: 1
     tau: 0.005
     target_update_interval: 1
     auto_entropy: true
@@ -154,7 +154,7 @@ policy:
   episodes_per_scenario: 40 #we lower this cuz we accidentally collected 10x data
   training_record_interval: 100
 
-  num_parallel_workers: 20
+  num_parallel_workers: 25
 
   eval_rollouts: 10
 

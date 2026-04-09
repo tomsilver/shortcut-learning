@@ -74,8 +74,9 @@ class NoneHeuristic(BaseHeuristic):
         Returns:
             Distance estimate
         """
-        # print(self._success_counts, self._success_counts is None)
-        return 0
+        # No learned distance — return random value as proxy for unknown distance
+        max_steps = getattr(getattr(self, 'config', None), 'max_episode_steps', 600)
+        return float(self.rng.uniform(0, max_steps))
 
     def prune(
         self, max_shortcuts: int | None, **kwargs: Any

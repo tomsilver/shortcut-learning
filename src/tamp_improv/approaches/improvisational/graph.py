@@ -232,22 +232,4 @@ class PlanningGraph:
             current_state = prev_state
         path.reverse()
 
-        total_cost = distances[best_goal_state]
-        print(f"Shortest path's cost: {total_cost}")
-        path_details = []
-        for edge in path:
-            if edge.costs:
-                cost_details = []
-                for (p, _), cost in edge.costs.items():
-                    path_str = "-".join(str(node_id) for node_id in p) if p else "start"
-                    cost_details.append(f"via {path_str}: {cost}")
-                path_details.append(
-                    f"{edge.source.id}->{edge.target.id} (is shortcut? {edge.is_shortcut}): [{', '.join(cost_details)}]"
-                )
-            else:
-                path_details.append(
-                    f"{edge.source.id}->{edge.target.id} [cost: {edge.cost}]"
-                )
-        print(f"Path details: {' -> '.join(path_details)}")
-
         return path

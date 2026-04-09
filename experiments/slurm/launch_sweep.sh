@@ -27,7 +27,7 @@ CODE_DIR="/home/de7281/thesis/shortcut-learning"
 SCRATCH_DIR="/scratch/gpfs/TSILVER/de7281/shortcut_learning"
 CONDA_ENV="slap_env"
 SLURM_TIME="04:00:00"
-SLURM_CPUS=90
+SLURM_CPUS=10
 SLURM_MEM="32G"
 DEFAULT_CONFIG="gridworld_continuous"
 # ─────────────────────────────────────────────────────────────────────────────

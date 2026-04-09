@@ -70,6 +70,8 @@ def filter_kwargs(fn, kwargs):
 
 def save_results(results: PipelineResults, path: Path):
     """Save PipelineResults directly — it's already fully serializable."""
+    # Drop bulky fields that can be reloaded from training_data_path
+    results.node_states = None
     with open(path / "results.pkl", "wb") as f:
         pickle.dump(results, f)
 

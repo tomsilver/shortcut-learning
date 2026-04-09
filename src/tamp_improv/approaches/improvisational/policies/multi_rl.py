@@ -535,6 +535,10 @@ def _train_policy_in_process(
 ):
     """Train a single policy in a worker process, reconstructing the env from factory."""
     import os, torch
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["MKL_NUM_THREADS"] = "1"
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
     env = env_factory()
     callback = TrainingProgressCallback(
         check_freq=policy.config.training_record_interval,
