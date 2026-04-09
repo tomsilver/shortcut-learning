@@ -177,7 +177,7 @@ class MRN(nn.Module):
         sa_asym = self.sa_asym(sa)
         g_asym = self.g_asym(g)
         res = F.relu(sa_asym - g_asym)
-        dist_asym = (F.softmax(res, -1) * res).sum(-1, keepdim=True)
+        dist_asym = res.max(dim=-1, keepdim=True).values
 
         return -(dist_sym + dist_asym)
 

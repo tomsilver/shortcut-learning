@@ -116,6 +116,31 @@ class BaseHeuristic(ABC):
         """
         pass
 
+    def estimate_probability(self, source_node: int, target_node: int, use_multi_rl: bool = True) -> float:
+        """Estimate success probability for a shortcut.
+
+        Default: Brownian motion estimate from distance. Subclasses with
+        empirical success data should override to support use_multi_rl=False.
+        """
+        max_steps = getattr(getattr(self, 'config', None), 'max_episode_steps', 600)
+        est_dist = self.estimate_node_distance(source_node, target_node)
+        if est_dist <= 0:
+            p_rr = 1.0
+        else:
+            p_rr = float(np.clip(np.exp(-est_dist**2 / (2 * max_steps)), 0, 1))
+        k = np.log(0.5) / np.log(1 - 0.05)
+        return 1 - (1 - p_rr)**k
+
+    def estimate_expected_cost(self, source_node: int, target_node: int, use_multi_rl: bool = True) -> float:
+        """Expected cost of a shortcut incorporating failure probability.
+
+        Returns p * d + (1 - p) * max_steps.
+        """
+        max_steps = getattr(getattr(self, 'config', None), 'max_episode_steps', 600)
+        p = self.estimate_probability(source_node, target_node, use_multi_rl=use_multi_rl)
+        d = self.estimate_node_distance(source_node, target_node)
+        return p * d + (1 - p) * max_steps
+
     @abstractmethod
     def get_action(self, obs: "ObsType", target_node: int) -> np.ndarray | int:
         """Get action to move from state toward target node.

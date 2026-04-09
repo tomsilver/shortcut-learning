@@ -1803,9 +1803,11 @@ def test_shortcut_quality(
         length_stats[(source_node, target_node)] = avg_length
 
         # Print progress every 5 shortcuts
-        if (idx + 1) % 5 == 0 or (idx + 1) == len(training_data.unique_shortcuts):
+        if (idx + 1) % 1 == 0 or (idx + 1) == len(training_data.unique_shortcuts):
             print(
-                f"  Tested {idx + 1}/{len(training_data.unique_shortcuts)} shortcuts..."
+                f"  Tested {idx + 1}/{len(training_data.unique_shortcuts)} shortcuts, "
+                f"success rate: {success_rate:.1%}",
+                f"average length: {avg_length:.1f} steps"
             )
 
     # Print detailed results
@@ -2074,8 +2076,32 @@ def run_pipeline(
             training_data = GoalConditionedTrainingData.load(Path(cfg.collection.training_data_path))
         else:
             raise FileNotFoundError(f"No training data found at {td_path} and load_data not configured")
-        graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
-        first_edge_dict = compute_first_edge_dict(training_data.graph)
+        gd_path = resume_path / "graph_distances.pkl"
+        fed_path = resume_path / "first_edge_dict.pkl"
+        if gd_path.exists() and fed_path.exists():
+            print(f"  Loading precomputed graph_distances and first_edge_dict from {resume_path}")
+            with open(gd_path, "rb") as f:
+                graph_distances = pickle.load(f)
+            with open(fed_path, "rb") as f:
+                first_edge_dict = pickle.load(f)
+        elif cfg.collection.training_data_path:
+            data_path = Path(cfg.collection.training_data_path)
+            gd2 = data_path / "graph_distances.pkl"
+            fed2 = data_path / "first_edge_dict.pkl"
+            if gd2.exists() and fed2.exists():
+                print(f"  Loading precomputed graph_distances and first_edge_dict from {data_path}")
+                with open(gd2, "rb") as f:
+                    graph_distances = pickle.load(f)
+                with open(fed2, "rb") as f:
+                    first_edge_dict = pickle.load(f)
+            else:
+                print("  Computing graph_distances and first_edge_dict ...")
+                graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
+                first_edge_dict = compute_first_edge_dict(training_data.graph)
+        else:
+            print("  Computing graph_distances and first_edge_dict ...")
+            graph_distances = compute_graph_distances(training_data.graph, exclude_shortcuts=True)
+            first_edge_dict = compute_first_edge_dict(training_data.graph)
 
         # Store serializable pre-training data
         node_atoms_ser, node_states_ser = _extract_node_data(training_data)
@@ -2100,7 +2126,7 @@ def run_pipeline(
             print(f"  Loading trained heuristic from {heuristic_path}")
             heuristic.load(str(heuristic_path))
         else:
-            raise FileNotFoundError(f"No heuristic checkpoint at {heuristic_path}")
+            print(f"  No heuristic checkpoint at {heuristic_path} — using freshly created heuristic")
 
         # Load previous results to carry over training metrics
         prev_results_path = resume_path / "results.pkl"
@@ -2119,9 +2145,24 @@ def run_pipeline(
             _extract_heuristic_round_data(heuristic, training_data)
         )
 
+        # Optionally resume past Stage 3 (pruning) and Stage 4 (policy training)
+        resume_pruned_training_data = None
+        resume_loaded_policy = False
+        ptd_resume_path = resume_path / "pruned_training_data"
+        policy_resume_path = resume_path / "multi_rl_policy"
+        if ptd_resume_path.exists():
+            print(f"  Loading pruned_training_data from {ptd_resume_path}")
+            resume_pruned_training_data = GoalConditionedTrainingData.load(ptd_resume_path)
+        if policy_resume_path.exists() and (policy_resume_path / "manifest.json").exists():
+            print(f"  Found multi_rl_policy checkpoint at {policy_resume_path}")
+            resume_loaded_policy = True
+
         print("  Skipping Stages 1-2, resuming at Stage 3 (pruning)")
         times["collection_time"] = 0.0
         times["heuristic_training_time"] = 0.0
+    else:
+        resume_pruned_training_data = None
+        resume_loaded_policy = False
 
     if not resume_path:
         # Stage 1: Collect training data
@@ -2203,17 +2244,6 @@ def run_pipeline(
             print("Skipping true distance computation (not supported for this environment)")
             results.true_distances = {}
 
-        # Create heuristic instance based on config
-        start = time.time()
-        if cfg.heuristic.type == "crl":
-            heuristic_config = dataclass_from_cfg(CRLHeuristicConfig, cfg.heuristic)
-        elif cfg.heuristic.type == "dqn":
-            heuristic_config = dataclass_from_cfg(DQNHeuristicConfig, cfg.heuristic.dqn)
-        elif cfg.heuristic.type == "cmd":
-            heuristic_config = dataclass_from_cfg(CMDHeuristicConfig, cfg.heuristic)
-        else:
-            heuristic_config = None
-
         heuristic = create_heuristic(
             training_data=copy.deepcopy(training_data),
             graph_distances=graph_distances,
@@ -2273,43 +2303,80 @@ def run_pipeline(
         return results
 
     # Stage 3: Prune with heuristic
-    print("STAGE 3: PRUNE WITH HEURISTIC")
-    start = time.time()
-    pruned_training_data = prune_with_heuristic(
-        heuristic=heuristic,
-        max_shortcuts=cfg.heuristic.max_shortcuts_per_graph,
-        use_multi_rl=cfg.policy.use_multi_rl,
-    )
-    results.pruned_shortcuts = list(pruned_training_data.unique_shortcuts)
-    times["heuristic_pruning_time"] = time.time() - start
+    if resume_pruned_training_data is not None:
+        print("STAGE 3: SKIP PRUNING (loaded from resume checkpoint)")
+        pruned_training_data = resume_pruned_training_data
+        results.pruned_shortcuts = list(pruned_training_data.unique_shortcuts)
+        times["heuristic_pruning_time"] = 0.0
+    else:
+        print("STAGE 3: PRUNE WITH HEURISTIC")
+        start = time.time()
+        pruned_training_data = prune_with_heuristic(
+            heuristic=heuristic,
+            max_shortcuts=cfg.heuristic.max_shortcuts_per_graph,
+            use_multi_rl=cfg.policy.use_multi_rl,
+        )
+        results.pruned_shortcuts = list(pruned_training_data.unique_shortcuts)
+        times["heuristic_pruning_time"] = time.time() - start
 
-    # Checkpoint: save pruned training data
-    if ckpt_dir:
-        ptd_path = ckpt_dir / "pruned_training_data"
-        ptd_path.mkdir(parents=True, exist_ok=True)
-        pruned_training_data.save(ptd_path)
-        print(f"[CKPT] Saved pruned training data to {ptd_path}")
+        # Checkpoint: save pruned training data
+        if ckpt_dir:
+            ptd_path = ckpt_dir / "pruned_training_data"
+            ptd_path.mkdir(parents=True, exist_ok=True)
+            pruned_training_data.save(ptd_path)
+            print(f"[CKPT] Saved pruned training data to {ptd_path}")
 
     # Stage 4: Create policy dictionary (conditionally trains MultiRL if use_multi_rl=True)
-    print("STAGE 4: CREATE POLICY DICTIONARY")
-    start = time.time()
     use_multi_rl = cfg.policy.use_multi_rl
-    policy_dict = create_policy_dictionary(
-        system=system,
-        heuristic=copy.deepcopy(heuristic),
-        policy=policy,
-        training_data=pruned_training_data,
-        cfg=cfg,
-        use_multi_rl=use_multi_rl,
-        system_cls=system_cls,
-        system_kwargs=system_kwargs,
-    )
-    times["policy_training_time"] = time.time() - start
+    if resume_loaded_policy and use_multi_rl and hasattr(policy, "load"):
+        print("STAGE 4: LOAD POLICY FROM RESUME CHECKPOINT (skip training)")
+        policy.load(str(resume_path / "multi_rl_policy"))
+        start = time.time()
+        policy_dict = create_policy_dictionary(
+            system=system,
+            heuristic=copy.deepcopy(heuristic),
+            policy=policy,
+            training_data=pruned_training_data,
+            cfg=cfg,
+            use_multi_rl=False,  # skip train() call inside; we just need wrappers
+            system_cls=system_cls,
+            system_kwargs=system_kwargs,
+        )
+        # Overwrite the heuristic-actor wrappers with multi_rl wrappers using the loaded policy
+        policy_dict = {}
+        for source_id, target_id in pruned_training_data.unique_shortcuts:
+            source_atoms = pruned_training_data.node_atoms[source_id]
+            target_atoms = pruned_training_data.node_atoms[target_id]
+            context = PolicyContext(
+                current_atoms=source_atoms,
+                goal_atoms=target_atoms,
+                info={"source_node_id": source_id, "target_node_id": target_id},
+            )
+            key = policy._get_policy_key(context)
+            if key in policy.policies:
+                policy_dict[(source_id, target_id)] = MultiRLPolicyWrapper(policy, context)
+            else:
+                print(f"  [WARN] No loaded policy for shortcut {source_id}->{target_id}")
+        times["policy_training_time"] = time.time() - start
+    else:
+        print("STAGE 4: CREATE POLICY DICTIONARY")
+        start = time.time()
+        policy_dict = create_policy_dictionary(
+            system=system,
+            heuristic=copy.deepcopy(heuristic),
+            policy=policy,
+            training_data=pruned_training_data,
+            cfg=cfg,
+            use_multi_rl=use_multi_rl,
+            system_cls=system_cls,
+            system_kwargs=system_kwargs,
+        )
+        times["policy_training_time"] = time.time() - start
 
-    # Checkpoint: save trained policies
-    if ckpt_dir and use_multi_rl and hasattr(policy, "save"):
-        policy.save(str(ckpt_dir / "multi_rl_policy"))
-        print(f"[CKPT] Saved trained policies to {ckpt_dir / 'multi_rl_policy'}")
+        # Checkpoint: save trained policies
+        if ckpt_dir and use_multi_rl and hasattr(policy, "save"):
+            policy.save(str(ckpt_dir / "multi_rl_policy"))
+            print(f"[CKPT] Saved trained policies to {ckpt_dir / 'multi_rl_policy'}")
 
     import psutil as _psutil
     def _mem_gb() -> str:
@@ -2332,7 +2399,7 @@ def run_pipeline(
     # Stage 5.5: Test shortcut quality — always run when shortcuts exist,
     # so we can populate the edge cost table for fast eval path planning.
     shortcut_quality_results = None
-    if len(pruned_training_data.valid_shortcuts) > 0:
+    if cfg.debug and len(pruned_training_data.valid_shortcuts) > 0:
         print("STAGE 5.5: TEST SHORTCUT QUALITY")
         shortcut_quality_results = test_shortcut_quality(
             system=virtual_system,
@@ -2355,13 +2422,26 @@ def run_pipeline(
         for edge in training_data.graph.edges
         if edge.cost is not None and edge.cost != float("inf")
     }
-    # Add shortcut costs from Stage 5.5 quality test results
+    # Add shortcut costs from Stage 5.5 quality test results (if available)
     if shortcut_quality_results is not None:
+        print("Filling in edge costs with empirical distances from shortcut quality tests...")
         for pair in shortcut_quality_results["pairs"]:
             src_atoms = training_data.node_atoms.get(pair["source_node"])
             tgt_atoms = training_data.node_atoms.get(pair["target_node"])
             if src_atoms is not None and tgt_atoms is not None:
                 approach._edge_cost_table[(frozenset(src_atoms), frozenset(tgt_atoms))] = pair["avg_length"]
+    else:     # Fill shortcut costs from heuristic expected cost (p * d + (1-p) * max_steps)
+        print("Filling in edge costs for shortcuts using heuristic estimates...")
+        use_multi_rl = cfg.policy.use_multi_rl
+        for source_id, target_id in pruned_training_data.unique_shortcuts:
+            src_atoms = training_data.node_atoms.get(source_id)
+            tgt_atoms = training_data.node_atoms.get(target_id)
+            if src_atoms is not None and tgt_atoms is not None:
+                key = (frozenset(src_atoms), frozenset(tgt_atoms))
+                if key not in approach._edge_cost_table:
+                    expected_cost = heuristic.estimate_expected_cost(source_id, target_id, use_multi_rl=use_multi_rl)
+                    approach._edge_cost_table[key] = expected_cost
+                    print(source_id, target_id, "->", expected_cost)
     print(f"fast_eval={cfg.evaluation.fast_eval}, built edge cost table with {len(approach._edge_cost_table)} entries")
 
     # Clear relevant_objects on the eval system's ImprovWrapper so base skills

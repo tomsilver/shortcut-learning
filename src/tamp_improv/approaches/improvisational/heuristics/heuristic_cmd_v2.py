@@ -16,6 +16,7 @@ Key components:
 Based on Eysenbach et al. "Contrastive Learning as Goal-Conditioned RL" (2021)
 """
 
+import concurrent.futures
 import copy
 import math
 import os
@@ -610,7 +611,7 @@ class CMDv2Heuristic(BaseHeuristic):
                 self._update_gains()
 
             # Print progress
-            if (epoch + 1) % 10 == 0 or epoch == 0:
+            if (epoch + 1) % 1 == 0 or epoch == 0:
                 critic_loss_str = f"{critic_losses[-1]:.4f}" if critic_losses else "N/A"
                 actor_loss_str = f"{actor_losses[-1]:.4f}" if actor_losses else "N/A"
                 print(
@@ -696,7 +697,7 @@ class CMDv2Heuristic(BaseHeuristic):
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
                 self._update_gains()
 
-            if (epoch + 1) % 10 == 0 or epoch == 0:
+            if (epoch + 1) % 1 == 0 or epoch == 0:
                 critic_loss_str = f"{critic_losses[-1]:.4f}" if critic_losses else "N/A"
                 actor_loss_str = f"{actor_losses[-1]:.4f}" if actor_losses else "N/A"
                 print(
@@ -869,12 +870,21 @@ class CMDv2Heuristic(BaseHeuristic):
             if skills:
                 skill = skills[0]
                 skill.reset(operator)
+                t0 = time.time()
                 try:
-                    action = skill.get_action(obs)
-                except Exception:
-                    action = None
-                if action is not None:
-                    return np.array(action, dtype=np.float32)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                        action = ex.submit(skill.get_action, obs).result(timeout=1)
+                    elapsed = time.time() - t0
+                    if action is not None:
+                        ba = np.array(action, dtype=np.float32).flatten()
+                        if ba.shape[0] == self.action_dim:
+                            print(f"[BASE_ACTION] node {target_node}: OK in {elapsed:.3f}s", flush=True)
+                            return ba
+                    print(f"[BASE_ACTION] node {target_node}: returned None in {elapsed:.3f}s", flush=True)
+                except concurrent.futures.TimeoutError:
+                    print(f"[TIMEOUT] skill.get_action hung for node {target_node} after {time.time()-t0:.3f}s, returning zeros", flush=True)
+                except Exception as e:
+                    print(f"[BASE_ACTION] skill.get_action failed for node {target_node} after {time.time()-t0:.3f}s: {e}", flush=True)
 
         return np.zeros(self.action_dim, dtype=np.float32)
 
@@ -918,8 +928,13 @@ class CMDv2Heuristic(BaseHeuristic):
             skill = skills[0]
             skill.reset(operator)
             try:
-                action = skill.get_action(obs_list[i])
-            except Exception:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    action = ex.submit(skill.get_action, obs_list[i]).result(timeout=1)
+            except concurrent.futures.TimeoutError:
+                print(f"[TIMEOUT] batch skill.get_action hung for pair ({current_node_ids[i]}->{goal_node_ids[i]}), returning zeros", flush=True)
+                action = None
+            except Exception as e:
+                print(f"[BASE_ACTION] batch skill.get_action failed for pair ({current_node_ids[i]}->{goal_node_ids[i]}): {e}", flush=True)
                 action = None
             if action is not None:
                 base_actions[i] = np.array(action, dtype=np.float32)
@@ -1277,8 +1292,18 @@ class CMDv2Heuristic(BaseHeuristic):
 
         
     
-    def estimate_probability(self, source_node: int, target_node: int) -> float:
-        """Estimate PPO success probability from distance using Brownian motion argument."""
+    def estimate_probability(self, source_node: int, target_node: int, use_multi_rl: bool = True) -> float:
+        """Estimate success probability for a shortcut.
+
+        If use_multi_rl=True, uses Brownian motion argument from estimated distance.
+        If use_multi_rl=False, uses empirical success rate from training (if available).
+        """
+        if not use_multi_rl:
+            k = self.config.num_reliability_trials
+            trials = self.node_pair_successes.get((source_node, target_node), [])
+            if len(trials) >= k > 0:
+                return float(np.mean(trials))
+            return 0.0
         est_dist = self.estimate_node_distance(source_node, target_node)
         if est_dist <= 0:
             p_rr = 1.0
@@ -1290,6 +1315,8 @@ class CMDv2Heuristic(BaseHeuristic):
     def prune(self, max_shortcuts: int, use_multi_rl: bool = False) -> GoalConditionedTrainingData:
 
         print(f"\n[DEBUG] Pruning greedily to max_shortcuts={max_shortcuts}")
+        # Calibrate dist_scale before pruning (important when loading from checkpoint)
+        self._update_gains()
 
         print("Heuristic-Estimated Lengths of All Shortcuts:")
         for (x, y) in self.training_data.unique_shortcuts:
@@ -1315,16 +1342,10 @@ class CMDv2Heuristic(BaseHeuristic):
             self._update_gains()
             gains = self.node_pair_gains[starts, ends]
 
+            # Compute success probabilities
             probs = np.zeros(len(starts))
-            if use_multi_rl:
-                for j, (s, t) in enumerate(zip(starts, ends)):
-                    probs[j] = self.estimate_probability(int(s), int(t))
-            else:
-                k = self.config.num_reliability_trials
-                for j, (s, t) in enumerate(zip(starts, ends)):
-                    trials = self.node_pair_successes.get((int(s), int(t)), [])
-                    if len(trials) >= k > 0:
-                        probs[j] = float(np.mean(trials))
+            for j, (s, t) in enumerate(zip(starts, ends)):
+                probs[j] = self.estimate_probability(int(s), int(t), use_multi_rl=use_multi_rl)
 
             if np.any(probs > 0):
                 scores = probs * gains

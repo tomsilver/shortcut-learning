@@ -27,7 +27,7 @@ CODE_DIR="/n/fs/iterativesl/shortcut-learning"
 SCRATCH_DIR="/n/fs/iterativesl/slap_outputs"
 CONDA_ENV="/n/fs/iterativesl/slap_env_2"
 SLURM_TIME="04:00:00"
-SLURM_CPUS=90
+SLURM_CPUS=10
 SLURM_MEM="32G"
 DEFAULT_CONFIG="gridworld_continuous"
 # ─────────────────────────────────────────────────────────────────────────────

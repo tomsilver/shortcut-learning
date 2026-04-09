@@ -363,7 +363,7 @@ def run_evaluation_episode_with_caching(
     print(f"[EVAL] Episode start: pos={start_pos}, node={init_node} atoms={init_atoms}")
     print(f"[EVAL] Goal: nodes={goal_nodes} atoms={goal_atoms_list}")
     print(f"[EVAL] First step result: terminate={step_result.terminate}, info={step_result.info}")
-    print(f"[EVAL] Current path: {approach.current_path}")
+    print(f"[EVAL] Current path: {[(e.source.id, e.target.id) for e in approach.current_path] if approach.current_path else 'None'}")
 
     trajectory_positions: list[list[float]] = [_flatten_obs(obs)]
 
@@ -397,7 +397,7 @@ def run_evaluation_episode_with_caching(
         episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
     prefix_ids_for_edge: list[tuple[int, ...]] = []
-    running_prefix: tuple[int, ...] = (0,)
+    running_prefix: tuple[int, ...] = ()
     for edge in best_edges:
         prefix_ids_for_edge.append(running_prefix)
         running_prefix = running_prefix + (edge.source.id,)
@@ -405,29 +405,17 @@ def run_evaluation_episode_with_caching(
     total_reward = 0.0
     step_count = 0
     done = False
-    success = True
+    success = False
 
-    # Execute first action from the reset
-    obs, reward, terminated, truncated, info = system.env.step(step_result.action)
-    trajectory_positions.append(_flatten_obs(obs))
-    total_reward += float(reward)
-    step_count += 1
-    if step_result.terminate or terminated or truncated:
-        success = (step_result.terminate and not step_result.info.get("skill_failed", False)) or terminated
-        if config.render and can_render:
-            cast(Any, system.env).close()
-            system.env = recording_env
-        episode_info["success"] = success
-        episode_info["true_steps"] = step_count
-        episode_info["reward"] = total_reward
-        episode_info["trajectory_positions"] = trajectory_positions
-        return total_reward, step_count, success, episode_info
-
-    # Execute segments: initial segment + all edges in the planned path
-    segments = [(0, best_edges[0].source.id, ())] + [
+    # Build segment keys matching the cache keys from _compute_eval_path.
+    # Each edge was cached as (source_id, target_id, path_prefix_at_source).
+    segments = [
         (edge.source.id, edge.target.id, prefix_ids_for_edge[i])
         for i, edge in enumerate(best_edges)
     ]
+    # Note: we do NOT execute step_result.action here — the cached actions
+    # already include the full action sequence for each edge. Executing the
+    # reset action would shift the env state and desync from the cache.
     for key in segments:
         if done:
             break
@@ -441,6 +429,7 @@ def run_evaluation_episode_with_caching(
                 step_count += 1
                 done = bool(terminated or truncated)
                 if done:
+                    success = bool(terminated)
                     break
         else:
             # Execute using approach

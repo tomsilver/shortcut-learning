@@ -23,7 +23,7 @@ collection:
   num_episodes: 10
   max_steps_per_edge: 600
   planner_id: pyperplan
-  num_cost_rollouts: 100
+  num_cost_rollouts: 10
   load_data: true
   training_data_path: /n/fs/iterativesl/training_data/cleanup_table
 
@@ -101,7 +101,7 @@ heuristic:
     actor_hidden_dims: [64, 64]
     batch_size: 64
     buffer_size: 100000
-    gamma: 0.99
+    gamma: 1
     tau: 0.005
     target_update_interval: 1
     auto_entropy: true
@@ -156,7 +156,7 @@ policy:
 
   eval_rollouts: 10
 
-  num_parallel_workers: 20
+  num_parallel_workers: 25
 
 
 evaluation:

@@ -888,7 +888,23 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
                 edge.max_cost = self._edge_cost_table.get(key, float("inf"))
                 edge.cost = self._edge_cost_table.get(key, float("inf"))
 
-        return self.planning_graph.find_shortest_path(init_atoms, goal)
+        path = self.planning_graph.find_shortest_path(init_atoms, goal)
+        if path:
+            node_ids = [edge.source.id for edge in path]
+            node_ids.append(path[-1].target.id)
+            node_str = " -> ".join(map(str, node_ids))
+            total_cost = sum(e.cost for e in path if e.cost != float("inf"))
+            shortcut_edges = [
+                f"{e.source.id} -> {e.target.id}"
+                for e in path if e.is_shortcut
+            ]
+            if shortcut_edges:
+                print(f"[FAST] Optimal path found with cost {total_cost}: {node_str} (with shortcut(s) {', '.join(shortcut_edges)})")
+            else:
+                print(f"[FAST] Optimal path found with cost {total_cost}: {node_str}")
+        else:
+            print("[FAST] No path found")
+        return path
 
     def _execute_edge(
         self,
@@ -965,8 +981,8 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         for _ in range(self.max_skill_steps):
             try:
                 act = skill.get_action(curr_aug_obs)
-            except AssertionError as e:
-                print(f"Skill raised AssertionError (kinematic planner failure): {e}")
+            except Exception as e:
+                print(f"Skill raised {type(e).__name__}: {e}")
                 return float("inf"), start_state, start_info, False
             # print("Action:", act)
             if act is None:

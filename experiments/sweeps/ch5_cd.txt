@@ -6,7 +6,7 @@
 # Lines starting with # and blank lines are ignored.
 
 # -- cluttered_drawer config ----------
-name=cd_pure_plan       config=cluttered_drawer  heuristic.type=none     policy.use_multi_rl=true  debug=false  gpu=multi_cpu  overwrite=true  time=167:00:00  seeds=42
+name=cd_pure_plan_ch5       config=cluttered_drawer  heuristic.max_shortcuts_per_graph=0 heuristic.type=none     policy.use_multi_rl=true  debug=false  gpu=multi_cpu  overwrite=true  time=167:00:00  seeds=42
 name=cd_none_ch5      config=cluttered_drawer  heuristic.type=none              policy.use_multi_rl=true   debug=false  gpu=multi_cpu  overwrite=true  time=167:00:00  seeds=42
 name=cd_routs_ch5     config=cluttered_drawer  heuristic.type=rollouts         policy.use_multi_rl=true  debug=false  gpu=multi_cpu  overwrite=true  time=167:00:00  seeds=42
 name=cd_srouts_ch5    config=cluttered_drawer  heuristic.type=smart_rollouts   policy.use_multi_rl=true  debug=false  gpu=multi_cpu  overwrite=true  time=167:00:00  seeds=42
