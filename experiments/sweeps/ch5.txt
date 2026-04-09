@@ -1,49 +1,29 @@
-# Sweep file example
+# Chapter 5: Baseline comparisons + SAC scaling + gain methods
 # Format: one experiment per line, space-separated Hydra overrides.
 # Special tokens (stripped before passing to Python):
 #   name=LABEL      human-readable label for job name and output dir
 #   config=NAME     Hydra --config-name (default: gridworld_continuous)
 # Lines starting with # and blank lines are ignored.
 
-# ── unit_test config ──────────────────────────────────────────────────────────
-name=ut_sac        config=unit_test             heuristic.type=sac_v2   seed=1  gpu=multi_cpu  overwrite=true time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=ut_dsac       config=unit_test             heuristic.type=dsac_v2  seed=1  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=ut_none       config=unit_test             heuristic.type=none     seed=1  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
+# ── Pure planning baseline (0 shortcuts) ─────────────────────────────
+name=gw_pure_planning_ch5  config=gridworld_continuous  heuristic.type=none  heuristic.max_shortcuts_per_graph=0  policy.use_multi_rl=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
 
-# -- gridworld config ----------
-name=gw_none_0_ch5       config=gridworld_continuous  heuristic.type=none     policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_none_10_ch5      config=gridworld_continuous  heuristic.type=none    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_routs_10_ch5     config=gridworld_continuous  heuristic.type=rollouts    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_srouts_10_ch5    config=gridworld_continuous  heuristic.type=smart_rollouts  policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_sac_10_ch5       config=gridworld_continuous  heuristic.type=sac_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=gw_dsac_10_ch5      config=gridworld_continuous  heuristic.type=dsac_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_crl_10_ch5       config=gridworld_continuous  heuristic.type=crl_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_cmd_10_ch5       config=gridworld_continuous  heuristic.type=cmd_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_none_25_ch5      config=gridworld_continuous  heuristic.type=none    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_routs_25_ch5     config=gridworld_continuous  heuristic.type=rollouts    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_srouts_25_ch5    config=gridworld_continuous  heuristic.type=smart_rollouts  policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_sac_25_ch5       config=gridworld_continuous  heuristic.type=sac_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=gw_dsac_25_ch5      config=gridworld_continuous  heuristic.type=dsac_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_crl_25_ch5       config=gridworld_continuous  heuristic.type=crl_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_cmd_25_ch5       config=gridworld_continuous  heuristic.type=cmd_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_none_50_ch5      config=gridworld_continuous  heuristic.type=none    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_routs_50_ch5     config=gridworld_continuous  heuristic.type=rollouts    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_srouts_50_ch5    config=gridworld_continuous  heuristic.type=smart_rollouts  policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_sac_50_ch5       config=gridworld_continuous  heuristic.type=sac_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=gw_dsac_50_ch5      config=gridworld_continuous  heuristic.type=dsac_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_crl_50_ch5       config=gridworld_continuous  heuristic.type=crl_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_cmd_50_ch5       config=gridworld_continuous  heuristic.type=cmd_v2    policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_none_100_ch5     config=gridworld_continuous  heuristic.type=none   policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_routs_100_ch5    config=gridworld_continuous  heuristic.type=rollouts   policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_srouts_100_ch5   config=gridworld_continuous  heuristic.type=smart_rollouts policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_sac_100_ch5      config=gridworld_continuous  heuristic.type=sac_v2   policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=gw_dsac_100_ch5     config=gridworld_continuous  heuristic.type=dsac_v2   policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_crl_100_ch5      config=gridworld_continuous  heuristic.type=crl_v2   policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
-name=gw_cmd_100_ch5      config=gridworld_continuous  heuristic.type=cmd_v2   policy.use_multi_rl=true  debug=true  gpu=multi_cpu  overwrite=true  time=167:00:00 seeds=42
+# ── All heuristics with 10 shortcuts ─────────────────────────────────
+name=gw_none_10_ch5   config=gridworld_continuous  heuristic.type=none     heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_routs_10_ch5  config=gridworld_continuous  heuristic.type=rollouts  heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_srouts_10_ch5 config=gridworld_continuous  heuristic.type=smart_rollouts  heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=true  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_sac_10_ch5    config=gridworld_continuous  heuristic.type=sac_v2   heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_dsac_10_ch5   config=gridworld_continuous  heuristic.type=dsac_v2  heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_crl_10_ch5    config=gridworld_continuous  heuristic.type=crl_v2   heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  heuristic.crl.num_epochs_per_round=1500  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_cmd_10_ch5    config=gridworld_continuous  heuristic.type=cmd_v2   heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  heuristic.crl.num_epochs_per_round=1500  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
 
-name=gw_sac_10_naive_ch5     config=gridworld_continuous  heuristic.type=sac_v2  policy.use_multi_rl=true  heuristic.sac.gain_method=naive  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=gw_dsac_10_naive_ch5    config=gridworld_continuous  heuristic.type=dsac_v2  policy.use_multi_rl=true  heuristic.sac.gain_method=naive  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_sac_10_estimate_ch5  config=gridworld_continuous  heuristic.type=sac_v2  policy.use_multi_rl=true  heuristic.sac.gain_method=estimate  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=gw_dsac_10_estimate_ch5 config=gridworld_continuous  heuristic.type=dsac_v2  policy.use_multi_rl=true  heuristic.sac.gain_method=estimate  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
-name=gw_sac_10_exact_ch5     config=gridworld_continuous  heuristic.type=sac_v2  policy.use_multi_rl=true  heuristic.sac.gain_method=exact  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 heuristic.sac.auto_dist_scale=false seeds=42
-name=gw_dsac_10_exact_ch5    config=gridworld_continuous  heuristic.type=dsac_v2  policy.use_multi_rl=true  heuristic.sac.gain_method=exact  debug=true  gpu=multi_cpu  overwrite=true time=167:00:00 seeds=42
+# ── SAC scaling max_shortcuts ────────────────────────────────────────
+name=gw_sac_15_ch5  config=gridworld_continuous  heuristic.type=sac_v2  heuristic.max_shortcuts_per_graph=15  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_sac_20_ch5  config=gridworld_continuous  heuristic.type=sac_v2  heuristic.max_shortcuts_per_graph=20  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_sac_25_ch5  config=gridworld_continuous  heuristic.type=sac_v2  heuristic.max_shortcuts_per_graph=25  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_sac_30_ch5  config=gridworld_continuous  heuristic.type=sac_v2  heuristic.max_shortcuts_per_graph=30  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+
+# ── SAC gain methods ─────────────────────────────────────────────────
+name=gw_sac_naive_ch5     config=gridworld_continuous  heuristic.type=sac_v2  heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  heuristic.sac.gain_method=naive     debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_sac_estimate_ch5  config=gridworld_continuous  heuristic.type=sac_v2  heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  heuristic.sac.gain_method=estimate  debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42
+name=gw_sac_exact_ch5     config=gridworld_continuous  heuristic.type=sac_v2  heuristic.max_shortcuts_per_graph=10  policy.use_multi_rl=false  heuristic.sac.num_epochs_per_round=1500  heuristic.sac.auto_dist_scale=false  heuristic.sac.gain_method=exact     debug=true  gpu=mig  overwrite=true  time=71:59:00  seeds=42

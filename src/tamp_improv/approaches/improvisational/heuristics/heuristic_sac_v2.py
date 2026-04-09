@@ -537,11 +537,14 @@ class SACv2Heuristic(BaseHeuristic):
         state_flat = self._flatten_state(current_state)
 
         for step in range(self.config.max_episode_steps):
+            print("Step:", step, "State:", state_flat)
             # Get base action from first_edge_dict for current state
             base_action = self._get_base_action(current_state, target_id)
+            print("Got base action:", base_action)
 
             # Stochastic action during training
             action = self._select_action(state_flat, goal_vec, deterministic=False, base_action=base_action)
+            print("Selected action:", action)
 
             next_state, _, terminated, truncated, _ = env.step(action)
             next_flat = self._flatten_state(next_state)
