@@ -26,7 +26,7 @@ Key components:
 - Auto-entropy tuning: log_alpha updated to maintain target entropy
 """
 
-import concurrent.futures
+
 import copy
 import os
 import pickle
@@ -130,6 +130,7 @@ class DSACv2HeuristicConfig:
     dist_quantile: float = 1.0
     auto_dist_scale: bool = False
     residualize: bool = False
+    residual_lam: float = 1.0  # Scaling factor on base action in residual actor (1.0=add base, 0.0=ignore base)
     max_atom_size: int = 50
 
     # Success tracking
@@ -309,6 +310,7 @@ class DSACv2Heuristic(BaseHeuristic):
             self.actor = ResidualContinuousActor(
                 self.state_dim, self.action_dim, atom_dim, actor_hidden_dims,
                 action_low=self._action_low, action_high=self._action_high,
+                lam=self.config.residual_lam,
             ).to(device)
         else:
             self.actor = ContinuousActor(
@@ -374,6 +376,7 @@ class DSACv2Heuristic(BaseHeuristic):
             self.actor = ResidualContinuousActor(
                 self.state_dim, self.action_dim, self.config.max_atom_size, actor_hidden_dims,
                 action_low=self._action_low, action_high=self._action_high,
+                lam=self.config.residual_lam,
             ).to(device)
         else:
             self.actor = ContinuousActor(
@@ -570,32 +573,39 @@ class DSACv2Heuristic(BaseHeuristic):
         if not self.config.residualize or self.first_edge_dict is None:
             return np.zeros(self.action_dim, dtype=np.float32)
 
+        print(f"[DEBUG _get_base_action] target_node={target_node}, calling perceiver.step...", flush=True)
+        t_perc = time.time()
         start_atoms = self.system.perceiver.step(obs)
+        print(f"[DEBUG _get_base_action] perceiver.step took {time.time()-t_perc:.3f}s, start_atoms={start_atoms}", flush=True)
+
         goal_atoms = self._node_atoms_dict.get(target_node, set())
         edge = self.first_edge_dict.get(
             (frozenset(start_atoms), frozenset(goal_atoms)), None
         )
+        print(f"[DEBUG _get_base_action] edge={'found' if edge is not None else 'None'}", flush=True)
         if edge is not None:
             operator = edge.operator
+            print(f"[DEBUG _get_base_action] operator={operator}", flush=True)
             skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
+            print(f"[DEBUG _get_base_action] found {len(skills)} matching skills, types={[type(sk).__name__ for sk in skills]}", flush=True)
             if skills:
                 skill = skills[0]
+                print(f"[DEBUG _get_base_action] calling skill.reset(operator)...", flush=True)
+                t_reset = time.time()
                 skill.reset(operator)
+                print(f"[DEBUG _get_base_action] skill.reset took {time.time()-t_reset:.3f}s", flush=True)
+                print(f"[DEBUG _get_base_action] calling skill.get_action(obs) directly (no thread)...", flush=True)
                 t0 = time.time()
                 try:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                        raw = ex.submit(skill.get_action, obs).result(timeout=1)
+                    raw = skill.get_action(obs)
                     elapsed = time.time() - t0
+                    print(f"[DEBUG _get_base_action] skill.get_action returned in {elapsed:.3f}s, raw={raw}", flush=True)
                     if raw is not None:
                         ba = np.array(raw, dtype=np.float32).flatten()
                         if ba.shape[0] == self.action_dim:
-                            print(f"[BASE_ACTION] node {target_node}: OK in {elapsed:.3f}s", flush=True)
                             return ba
-                    print(f"[BASE_ACTION] node {target_node}: returned None in {elapsed:.3f}s", flush=True)
-                except concurrent.futures.TimeoutError:
-                    print(f"[TIMEOUT] skill.get_action hung for node {target_node} after {time.time()-t0:.3f}s, returning zeros", flush=True)
                 except Exception as e:
-                    print(f"[BASE_ACTION] skill.get_action failed for node {target_node} after {time.time()-t0:.3f}s: {e}", flush=True)
+                    print(f"[DEBUG _get_base_action] skill.get_action raised {type(e).__name__}: {e} after {time.time()-t0:.3f}s", flush=True)
         return np.zeros(self.action_dim, dtype=np.float32)
 
     def _select_action(
@@ -782,19 +792,13 @@ class DSACv2Heuristic(BaseHeuristic):
             if skill is None:
                 continue
             skill.reset(operator)
-            try:
-                obs = obs_raws[i] if obs_raws is not None else None
-                if obs is None:
-                    action = None
-                else:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                        action = ex.submit(skill.get_action, obs).result(timeout=1)
-            except concurrent.futures.TimeoutError:
-                print(f"[TIMEOUT] batch skill.get_action hung for pair ({source_node_ids[i]}->{goal_node_ids[i]}), returning zeros", flush=True)
-                action = None
-            except Exception as e:
-                print(f"[BASE_ACTION] batch skill.get_action failed for pair ({source_node_ids[i]}->{goal_node_ids[i]}): {e}", flush=True)
-                action = None
+            obs = obs_raws[i] if obs_raws is not None else None
+            action = None
+            if obs is not None:
+                try:
+                    action = skill.get_action(obs)
+                except Exception as e:
+                    print(f"[BASE_ACTION] batch skill.get_action failed for pair ({source_node_ids[i]}->{goal_node_ids[i]}): {e}", flush=True)
             if action is not None:
                 base_actions[i] = np.array(action, dtype=np.float32)
 
@@ -837,16 +841,25 @@ class DSACv2Heuristic(BaseHeuristic):
         return self.config.dist_scale * float(np.mean(dists))
 
     def _batch_estimate_raw_distances(self, pairs: list[tuple[int, int]]) -> np.ndarray:
-        """Batch pessimistic expected distances for all (src, tgt) pairs."""
+        """Batch pessimistic expected distances for all (src, tgt) pairs.
+
+        For each pair, samples node_distance_samples source states and averages
+        the distributional distance estimates across them to reduce variance.
+        """
         device = torch.device(self.config.device)
+        k = self.config.node_distance_samples
+
+        # Build batched inputs: k samples per pair
         states_list = []
         goals_list = []
         for src, tgt in pairs:
             source_states = self.training_data.node_states[src]
-            state = random.choice(source_states)
-            states_list.append(self._flatten_state(state))
+            samples = random.sample(source_states, min(k, len(source_states)))
             target_atoms = self._node_atoms_dict.get(tgt, set())
-            goals_list.append(self.create_atom_vector(target_atoms))
+            goal_vec = self.create_atom_vector(target_atoms)
+            for s in samples:
+                states_list.append(self._flatten_state(s))
+                goals_list.append(goal_vec)
 
         states_t = torch.FloatTensor(np.array(states_list, dtype=np.float32)).to(device)
         goals_t = torch.FloatTensor(np.array(goals_list, dtype=np.float32)).to(device)
@@ -857,7 +870,16 @@ class DSACv2Heuristic(BaseHeuristic):
             probs_2 = self.q2.get_probs(states_t, actions, goals_t)
             dist_1 = self._expected_distance(probs_1)
             dist_2 = self._expected_distance(probs_2)
-        return torch.maximum(dist_1, dist_2).cpu().numpy()
+        raw_all = torch.maximum(dist_1, dist_2).cpu().numpy()
+
+        # Average over the k samples per pair
+        result = np.empty(len(pairs), dtype=np.float32)
+        idx = 0
+        for i, (src, _) in enumerate(pairs):
+            n_samples = min(k, len(self.training_data.node_states[src]))
+            result[i] = raw_all[idx:idx + n_samples].mean()
+            idx += n_samples
+        return result
 
     # ── Gain methods ─────────────────────────────────────────────────
 
@@ -866,12 +888,45 @@ class DSACv2Heuristic(BaseHeuristic):
         d = self.node_pair_graph_dists
         if L is None:
             L = self.estimate_node_distance(x, y)
+
+        L_old = d[x, y]
         U = np.where(np.isfinite(d[:, x]))[0]
         V = np.where(np.isfinite(d[y, :]))[0]
+
         new_paths = d[U, x][:, None] + L + d[y, V][None, :]
         old_paths = np.minimum(d[np.ix_(U, V)], self.config.max_episode_steps)
-        return float(np.sum(np.maximum(0, old_paths - new_paths)))
+        old_paths = np.minimum(old_paths, d[U, x][:, None] + L_old + d[y, V][None, :])
+        savings = np.maximum(0, old_paths - new_paths)
+        total_gain = float(np.sum(savings))
 
+        # ── Debug: dump contributors when gain looks suspicious ──
+        debug = getattr(self, "_debug_exact_gain", False)
+        if debug:
+            d_xy_direct = d[x, y]
+            print(
+                f"[EXACT_GAIN] x={x} y={y} L={L:.3f} d[x,y]={d_xy_direct} "
+                f"|U|={len(U)} |V|={len(V)} total_gain={total_gain:.3f}",
+                flush=True,
+            )
+            if total_gain > 0 and savings.size > 0:
+                # Top 10 contributing (u, v) pairs
+                flat_idx = np.argsort(savings.ravel())[::-1][:10]
+                for fi in flat_idx:
+                    ui, vi = np.unravel_index(fi, savings.shape)
+                    s = savings[ui, vi]
+                    if s <= 0:
+                        break
+                    u_node = int(U[ui])
+                    v_node = int(V[vi])
+                    print(
+                        f"  ({u_node}->{v_node}): old={old_paths[ui,vi]:.1f} "
+                        f"new={new_paths[ui,vi]:.1f} (d[{u_node},{x}]={d[u_node,x]:.1f} "
+                        f"+ L={L:.1f} + d[{y},{v_node}]={d[y,v_node]:.1f}) save={s:.2f}",
+                        flush=True,
+                    )
+
+        return total_gain
+    
     def estimate_gain(self, source_node: int, target_node: int, L: float | None = None) -> float:
         x, y = source_node, target_node
         d = np.clip(self.node_pair_graph_dists, 0, self.config.max_episode_steps)
@@ -993,6 +1048,7 @@ class DSACv2Heuristic(BaseHeuristic):
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
+            self._current_epoch = epoch
             for _ in range(self.config.trajectories_per_epoch):
                 trajectory, goal_vec, target_id, source_id = self._collect_trajectory()
                 self._add_to_buffer_with_her(trajectory, goal_vec, target_id, source_id)

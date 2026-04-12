@@ -274,6 +274,7 @@ def collect_all_shortcuts(
         shortcut_candidates = identify_shortcut_candidates(
             planning_graph,
             observed_states,
+            filter_diagonal_max_size=int(config.get("filter_diagonal_max_size", 0)) if isinstance(config, dict) else getattr(getattr(config, "collection", config), "filter_diagonal_max_size", 0),
         )
 
         print(f"Identified {len(shortcut_candidates)} shortcut candidates")
@@ -408,6 +409,7 @@ def collect_total_shortcuts(
     shortcut_candidates = identify_shortcut_candidates(
         total_graph,
         observed_states,
+        filter_diagonal_max_size=getattr(cfg.collection, "filter_diagonal_max_size", 0),
     )
 
     print(f"Identified {len(shortcut_candidates)} shortcut candidates")

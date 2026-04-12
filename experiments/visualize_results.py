@@ -432,6 +432,63 @@ def plot_pruned_shortcuts_on_grid(results: Any, save_dir: Path) -> None:
     print(f"[SAVED] {save_dir / 'pruned_shortcuts_on_grid.png'}")
 
 
+def plot_graduation_snapshots(results: Any, save_dir: Path) -> None:
+    """Draw the virtual graph state after each graduation.
+
+    Saves one PNG per snapshot into save_dir/graduation_snapshots/, using the
+    same visual format as plot_pruned_shortcuts_on_grid. The most recently
+    added shortcut is highlighted in red; previously graduated shortcuts are blue.
+    """
+    if not results.grid_config or not results.node_atoms:
+        print("[SKIP] Missing grid_config or node_atoms for graduation snapshots.")
+        return
+    snapshots = getattr(results, "graduation_snapshots", None)
+    if not snapshots:
+        print("[SKIP] No graduation_snapshots to display.")
+        return
+
+    snap_dir = save_dir / "graduation_snapshots"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+
+    for idx, snap in enumerate(snapshots):
+        graduated = snap["graduated_so_far"]
+        latest_pair = (snap["source_id"], snap["target_id"])
+        epoch = snap.get("epoch", -1)
+
+        fig, ax = plt.subplots(figsize=(10, 10))
+        draw_grid(ax, results.grid_config, results.node_atoms, draw_portals=True)
+
+        for src, tgt in graduated:
+            src_rc = node_id_to_rc(src, results.node_atoms)
+            tgt_rc = node_id_to_rc(tgt, results.node_atoms)
+            if src_rc is None or tgt_rc is None:
+                continue
+            x0, y0 = _cell_center(src_rc[0], src_rc[1], results.grid_config)
+            x1, y1 = _cell_center(tgt_rc[0], tgt_rc[1], results.grid_config)
+            is_latest = (src, tgt) == latest_pair
+            arrow = FancyArrowPatch(
+                (x0, y0), (x1, y1),
+                arrowstyle="-|>", mutation_scale=15,
+                linestyle="--",
+                linewidth=2.5 if is_latest else 1.5,
+                color="tab:red" if is_latest else "tab:blue",
+                alpha=0.95 if is_latest else 0.6,
+                connectionstyle="arc3,rad=0.15",
+            )
+            ax.add_patch(arrow)
+
+        ax.set_title(
+            f"Graduation #{idx + 1} (epoch {epoch}): "
+            f"{len(graduated)} graduated, latest = {latest_pair[0]}→{latest_pair[1]}"
+        )
+        plt.tight_layout()
+        out_path = snap_dir / f"graduation_{idx + 1:03d}.png"
+        plt.savefig(out_path, dpi=120, bbox_inches="tight")
+        plt.close()
+
+    print(f"[SAVED] {len(snapshots)} graduation snapshots to {snap_dir}")
+
+
 def plot_virtual_shortcuts_per_round(results: Any, save_dir: Path) -> None:
     """For each training round, draw the cumulative set of virtually added shortcuts."""
     if not results.grid_config or not results.node_atoms:
@@ -1041,6 +1098,7 @@ def main() -> None:
     plot_heuristic_metrics_per_round(results, output_dir)
     plot_estimated_vs_true_distance(results, output_dir)
     plot_pruned_shortcuts_on_grid(results, output_dir)
+    plot_graduation_snapshots(results, output_dir)
     plot_virtual_shortcuts_per_round(results, output_dir)
     plot_eval_distributions(results, output_dir)
     plot_eval_trajectories(results, output_dir)

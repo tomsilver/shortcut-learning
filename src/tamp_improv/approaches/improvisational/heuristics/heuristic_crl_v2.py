@@ -16,7 +16,7 @@ Key components:
 Based on Eysenbach et al. "Contrastive Learning as Goal-Conditioned RL" (2021)
 """
 
-import concurrent.futures
+
 import copy
 import math
 import os
@@ -99,6 +99,7 @@ class CRLV2HeuristicConfig:
     dist_quantile: float = 1.0  # Quantile for distance scaling when computing gains
     auto_dist_scale: bool = False  # Whether to automatically set dist_scale based on quantile
     residualize: bool = False  # Whether to residualize actor actions with base skill actions
+    residual_lam: float = 1.0  # Scaling factor on base action in residual actor (1.0=add base, 0.0=ignore base)
 
     # Contrastive learning
     gamma: float = 0.99  # For geometric sampling of future states
@@ -523,6 +524,7 @@ class CRLv2Heuristic(BaseHeuristic):
                 atom_dim=self.config.max_atom_size,
                 hidden_dims=self.config.actor_hidden_dims,
                 action_low=self._action_low, action_high=self._action_high,
+                lam=self.config.residual_lam,
             ).to(device)
         else:
             self.actor = ContinuousActor(
@@ -744,32 +746,39 @@ class CRLv2Heuristic(BaseHeuristic):
         if not self.config.residualize or self.action_space_type != "continuous":
             return np.zeros(self.action_dim, dtype=np.float32)
 
+        print(f"[DEBUG _get_base_action] target_node={target_node}, calling perceiver.step...", flush=True)
+        t_perc = time.time()
         start_atoms = self.system.perceiver.step(obs)
+        print(f"[DEBUG _get_base_action] perceiver.step took {time.time()-t_perc:.3f}s, start_atoms={start_atoms}", flush=True)
+
         goal_atoms = self._node_atoms_dict.get(target_node, set())
         edge = self.first_edge_dict.get(
             (frozenset(start_atoms), frozenset(goal_atoms)), None
         )
+        print(f"[DEBUG _get_base_action] edge={'found' if edge is not None else 'None'}", flush=True)
         if edge is not None:
             operator = edge.operator
+            print(f"[DEBUG _get_base_action] operator={operator}", flush=True)
             skills = [s for s in self.virtual_system.skills if s.can_execute(operator)]
+            print(f"[DEBUG _get_base_action] found {len(skills)} matching skills, types={[type(sk).__name__ for sk in skills]}", flush=True)
             if skills:
                 skill = skills[0]
+                print(f"[DEBUG _get_base_action] calling skill.reset(operator)...", flush=True)
+                t_reset = time.time()
                 skill.reset(operator)
+                print(f"[DEBUG _get_base_action] skill.reset took {time.time()-t_reset:.3f}s", flush=True)
+                print(f"[DEBUG _get_base_action] calling skill.get_action(obs) directly (no thread)...", flush=True)
                 t0 = time.time()
                 try:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                        action = ex.submit(skill.get_action, obs).result(timeout=1)
+                    raw = skill.get_action(obs)
                     elapsed = time.time() - t0
-                    if action is not None:
-                        ba = np.array(action, dtype=np.float32).flatten()
+                    print(f"[DEBUG _get_base_action] skill.get_action returned in {elapsed:.3f}s, raw={raw}", flush=True)
+                    if raw is not None:
+                        ba = np.array(raw, dtype=np.float32).flatten()
                         if ba.shape[0] == self.action_dim:
-                            print(f"[BASE_ACTION] node {target_node}: OK in {elapsed:.3f}s", flush=True)
                             return ba
-                    print(f"[BASE_ACTION] node {target_node}: returned None in {elapsed:.3f}s", flush=True)
-                except concurrent.futures.TimeoutError:
-                    print(f"[TIMEOUT] skill.get_action hung for node {target_node} after {time.time()-t0:.3f}s, returning zeros", flush=True)
                 except Exception as e:
-                    print(f"[BASE_ACTION] skill.get_action failed for node {target_node} after {time.time()-t0:.3f}s: {e}", flush=True)
+                    print(f"[DEBUG _get_base_action] skill.get_action raised {type(e).__name__}: {e} after {time.time()-t0:.3f}s", flush=True)
 
         return np.zeros(self.action_dim, dtype=np.float32)
 
@@ -809,15 +818,11 @@ class CRLv2Heuristic(BaseHeuristic):
                 continue
             skill = skills[0]
             skill.reset(operator)
+            action = None
             try:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                    action = ex.submit(skill.get_action, obs_list[i]).result(timeout=1)
-            except concurrent.futures.TimeoutError:
-                print(f"[TIMEOUT] batch skill.get_action hung for pair ({current_node_ids[i]}->{goal_node_ids[i]}), returning zeros", flush=True)
-                action = None
+                action = skill.get_action(obs_list[i])
             except Exception as e:
                 print(f"[BASE_ACTION] batch skill.get_action failed for pair ({current_node_ids[i]}->{goal_node_ids[i]}): {e}", flush=True)
-                action = None
             if action is not None:
                 base_actions[i] = np.array(action, dtype=np.float32)
 
@@ -1277,33 +1282,49 @@ class CRLv2Heuristic(BaseHeuristic):
         return pruned_data
 
     
-    def exact_gain(self, source_node: int, target_node: int) -> float:
-        """Estimate gain of training on a shortcut, relative to distance in the
-        initial graph.
-
-        Higher gain means more useful shortcut.
-        """
-
-        x = source_node
-        y = target_node
-
+    def exact_gain(self, source_node: int, target_node: int, L: float | None = None) -> float:
+        x, y = source_node, target_node
         d = self.node_pair_graph_dists
-        L = self.estimate_node_distance(source_node, target_node)
+        if L is None:
+            L = self.estimate_node_distance(x, y)
 
-        U = np.where(np.isfinite(d[:, x]))[0]   # can reach x
-        V = np.where(np.isfinite(d[y, :]))[0]   # reachable from y
-        
-        d_ux = d[U, x][:, None]
+        L_old = d[x, y]
+        U = np.where(np.isfinite(d[:, x]))[0]
+        V = np.where(np.isfinite(d[y, :]))[0]
 
-        d_yv = d[y, V][None, :]
-
-        new_paths = d_ux + L + d_yv
-
+        new_paths = d[U, x][:, None] + L + d[y, V][None, :]
         old_paths = np.minimum(d[np.ix_(U, V)], self.config.max_episode_steps)
+        old_paths = np.minimum(old_paths, d[U, x][:, None] + L_old + d[y, V][None, :])
+        savings = np.maximum(0, old_paths - new_paths)
+        total_gain = float(np.sum(savings))
 
-        improvement = np.maximum(0, old_paths - new_paths)
+        # ── Debug: dump contributors when gain looks suspicious ──
+        debug = getattr(self, "_debug_exact_gain", False)
+        if debug:
+            d_xy_direct = d[x, y]
+            print(
+                f"[EXACT_GAIN] x={x} y={y} L={L:.3f} d[x,y]={d_xy_direct} "
+                f"|U|={len(U)} |V|={len(V)} total_gain={total_gain:.3f}",
+                flush=True,
+            )
+            if total_gain > 0 and savings.size > 0:
+                # Top 10 contributing (u, v) pairs
+                flat_idx = np.argsort(savings.ravel())[::-1][:10]
+                for fi in flat_idx:
+                    ui, vi = np.unravel_index(fi, savings.shape)
+                    s = savings[ui, vi]
+                    if s <= 0:
+                        break
+                    u_node = int(U[ui])
+                    v_node = int(V[vi])
+                    print(
+                        f"  ({u_node}->{v_node}): old={old_paths[ui,vi]:.1f} "
+                        f"new={new_paths[ui,vi]:.1f} (d[{u_node},{x}]={d[u_node,x]:.1f} "
+                        f"+ L={L:.1f} + d[{y},{v_node}]={d[y,v_node]:.1f}) save={s:.2f}",
+                        flush=True,
+                    )
 
-        return float(np.sum(improvement))
+        return total_gain
     
     def estimate_gain(self, source_node: int, target_node: int) -> float:
         """Estimate gain of training on a shortcut, relative to distance in the
@@ -1439,6 +1460,7 @@ class CRLv2Heuristic(BaseHeuristic):
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
+            self._current_epoch = epoch
             for _ in range(self.config.trajectories_per_epoch):
                 trajectory, source_id, target_id = self._collect_trajectory()
                 self.replay_buffer.add_trajectory(trajectory)

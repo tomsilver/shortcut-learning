@@ -119,7 +119,13 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     TMP_SCRIPT="$SCRATCH_DIR/tmp/sweep_${FULL_NAME}_$(date +%s%N).sh"
 
     # Build resource directives depending on gpu= flag
-    if [ "$USE_GPU" = "true" ] || [ "$USE_GPU" = "mig" ]; then
+    if [ "$USE_GPU" = "mig" ]; then
+        RESOURCE_LINES="#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=${SLURM_MEM}
+#SBATCH --gres=gpu:1
+#SBATCH --partition=mig"
+    elif [ "$USE_GPU" = "true" ]; then
         RESOURCE_LINES="#SBATCH --ntasks=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=${SLURM_MEM}
@@ -149,12 +155,12 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 #SBATCH --nodes=1
 ${RESOURCE_LINES}
 
-module load anaconda3/2024.02
 export LAPACK_DIR="/usr/lib64"
 export LIBGFORTRAN_DIR="/usr/lib64"
 export BLAS_DIR="/usr/lib64"
 
-source /usr/local/anaconda3/2024.02/etc/profile.d/conda.sh
+echo "Activating conda environment: ${CONDA_ENV}..."
+source /scratch/gpfs/TSILVER/de7281/miniconda3/etc/profile.d/conda.sh
 conda activate "${CONDA_ENV}"
 
 cd "${CODE_DIR}" || exit 1

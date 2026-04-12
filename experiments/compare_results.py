@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 
 matplotlib.use("Agg")
 
-DEFAULT_OUTPUTS_DIR = Path("/n/fs/recbench/slap_outputs/outputs")
+DEFAULT_OUTPUTS_DIR = Path("/scratch/gpfs/TSILVER/de7281/shortcut_learning/outputs")
 
 
 def parse_results(results_path: Path) -> dict[str, str]:

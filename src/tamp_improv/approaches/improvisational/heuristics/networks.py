@@ -394,6 +394,7 @@ class ResidualContinuousActor(nn.Module):
         log_std_max: float = 2,
         action_low: np.ndarray | None = None,
         action_high: np.ndarray | None = None,
+        lam: float = 1.0,
     ):
         super().__init__()
         self.state_dim = state_dim
@@ -401,6 +402,7 @@ class ResidualContinuousActor(nn.Module):
         self.atom_dim = atom_dim
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
+        self.lam = lam
         if action_low is not None and action_high is not None:
             self.register_buffer("action_low", torch.FloatTensor(action_low))
             self.register_buffer("action_high", torch.FloatTensor(action_high))
@@ -475,14 +477,13 @@ class ResidualContinuousActor(nn.Module):
 
         mean, log_std = self._compute_params(states, goal_atom_vectors, base_actions)
 
-        lam = 1.0  # Scaling factor for residual; can be tuned or annealed
         if deterministic:
-            return self._clip(lam * base_actions + self._rescale(torch.tanh(mean))), None
+            return self._clip(self.lam * base_actions + self._rescale(torch.tanh(mean))), None
 
         std = log_std.exp()
         x_t = torch.distributions.Normal(mean, std).rsample()
         residual = torch.tanh(x_t)
-        action = self._clip(lam * base_actions + self._rescale(residual))
+        action = self._clip(self.lam * base_actions + self._rescale(residual))
 
         log_prob = torch.distributions.Normal(mean, std).log_prob(x_t)
         log_prob -= torch.log(1 - residual.pow(2) + 1e-6)

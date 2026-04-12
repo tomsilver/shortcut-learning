@@ -159,20 +159,102 @@ class MultiRLPolicyWrapper(Policy[ObsType, ActType]):
         pass
 
 
+class FrozenHeuristicSnapshot:
+    """Lightweight snapshot of a heuristic at graduation time.
+
+    Captures only what's needed for get_action / _get_base_action:
+      - actor (deep-copied so weights are frozen)
+      - virtual_system (deep-copied so skill set is frozen)
+      - first_edge_dict, _node_atoms_dict, system (shallow refs — immutable during training)
+      - config, action_dim, atom_to_index (small metadata)
+
+    Skips the replay buffer, critics, optimizers, and other training state
+    that would make a full deepcopy expensive.
+    """
+
+    def __init__(self, heuristic: "BaseHeuristic"):
+        import copy
+        # Deep-copy actor weights (small neural net)
+        self.actor = copy.deepcopy(heuristic.actor)
+        # Snapshot the skill/operator sets: shallow-copy the containers so
+        # future add/remove on the live heuristic's virtual_system won't
+        # affect this snapshot, but don't deep-copy the individual skills
+        # (which contain older FrozenHeuristicSnapshots — deep-copying
+        # would cause O(N!) memory growth over N graduations).
+        self._frozen_skills = set(heuristic.virtual_system.skills)
+        # Shallow refs to immutable / shared state
+        self.system = heuristic.system
+        self.first_edge_dict = heuristic.first_edge_dict
+        self._node_atoms_dict = heuristic._node_atoms_dict
+        self.config = heuristic.config
+        self.action_dim = heuristic.action_dim
+        self.atom_to_index = heuristic.atom_to_index
+        self._flatten_state = heuristic._flatten_state
+        self.create_atom_vector = heuristic.create_atom_vector
+
+    def get_action(self, obs: Any, target_node: int) -> Any:
+        state_flat = self._flatten_state(obs)
+        target_atoms = self._node_atoms_dict.get(target_node, set())
+        goal_vec = self.create_atom_vector(target_atoms)
+        base_action = self._get_base_action(obs, target_node)
+        return self._select_action(state_flat, goal_vec, deterministic=True, base_action=base_action)
+
+    def _get_base_action(self, obs: Any, target_node: int) -> Any:
+        """Same logic as heuristic._get_base_action but uses frozen skill set."""
+        if not self.config.residualize or self.first_edge_dict is None:
+            return np.zeros(self.action_dim, dtype=np.float32)
+
+        start_atoms = self.system.perceiver.step(obs)
+        goal_atoms = self._node_atoms_dict.get(target_node, set())
+        edge = self.first_edge_dict.get(
+            (frozenset(start_atoms), frozenset(goal_atoms)), None
+        )
+        if edge is not None:
+            operator = edge.operator
+            skills = [sk for sk in self._frozen_skills if sk.can_execute(operator)]
+            if skills:
+                skill = skills[0]
+                skill.reset(operator)
+                try:
+                    raw = skill.get_action(obs)
+                    if raw is not None:
+                        ba = np.array(raw, dtype=np.float32).flatten()
+                        if ba.shape[0] == self.action_dim:
+                            return ba
+                except Exception:
+                    pass
+        return np.zeros(self.action_dim, dtype=np.float32)
+
+    def _select_action(self, state_flat: Any, goal_vec: Any,
+                       deterministic: bool = False, base_action: Any = None) -> Any:
+        """Query frozen actor for an action."""
+        import torch
+        from .heuristics.networks import ResidualContinuousActor
+        device = torch.device(self.config.device)
+        with torch.no_grad():
+            s_t = torch.FloatTensor(state_flat).unsqueeze(0).to(device)
+            g_t = torch.FloatTensor(goal_vec).unsqueeze(0).to(device)
+            if isinstance(self.actor, ResidualContinuousActor) and base_action is not None:
+                base_t = torch.FloatTensor(base_action).unsqueeze(0).to(device)
+                action, _ = self.actor.sample(s_t, g_t, base_t, deterministic=deterministic)
+            else:
+                action, _ = self.actor.sample(s_t, g_t, deterministic=deterministic)
+        return action.squeeze(0).cpu().numpy()
+
+
 class HeuristicPolicyWrapper(Policy[ObsType, ActType]):
-    """Wrapper that uses heuristic's policy to navigate to a target node."""
+    """Wrapper that uses a heuristic (or frozen snapshot) to navigate to a target node."""
 
     def __init__(
         self,
-        heuristic: "BaseHeuristic",
+        heuristic: "BaseHeuristic | FrozenHeuristicSnapshot",
         target_node_id: int,
     ):
         """Initialize wrapper.
 
         Args:
-            heuristic: Trained heuristic with _select_action_with_actor method
+            heuristic: Trained heuristic or frozen snapshot with get_action method
             target_node_id: ID of the target node to navigate to
-            env: Environment (needed for action selection)
         """
         self.heuristic = heuristic
         self.target_node_id = target_node_id
@@ -478,6 +560,11 @@ class PipelineResults:
     # estimated_distances, gains
     training_rounds: list[dict[str, Any]] = field(default_factory=list)
 
+    # === Graduation snapshots ===
+    # One entry per graduation event: {"epoch": int, "source_id": int, "target_id": int,
+    # "graduated_so_far": list[tuple[int, int]]}
+    graduation_snapshots: list[dict[str, Any]] = field(default_factory=list)
+
     # === After Training (Pruning) ===
     pruned_shortcuts: list[tuple[int, int]] | None = None
     all_shortcuts: list[tuple[int, int]] | None = None
@@ -748,6 +835,7 @@ def train_heuristic(
     heuristic: "BaseHeuristic",
     cfg: DictConfig,
     checkpoint_callback: Callable[[], None] | None = None,
+    graduation_snapshots: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Stage 2: Train the heuristic.
 
@@ -769,10 +857,36 @@ def train_heuristic(
     round_results: list[dict[str, Any]] = []
 
     if getattr(cfg.heuristic, "continuous_graduation", False):
+        _graduated_so_far: list[tuple[int, int]] = []
+
         def _graduation_callback(h: "BaseHeuristic", source_id: int, target_id: int) -> None:
             """Add operator+skill to virtual_system and edge to internal_graph for one graduated pair."""
-            wrapper = HeuristicPolicyWrapper(heuristic=h, target_node_id=target_id)
+            # Create a lightweight frozen snapshot so the graduated skill's
+            # virtual_system is frozen and does NOT include the skill we're about
+            # to add. This prevents infinite recursion without deep-copying the
+            # entire heuristic (replay buffer, critics, optimizers, etc.).
+            import sys
+            import psutil as _psutil
+            _rss = lambda: _psutil.Process().memory_info().rss / 1e9
+            mem_before = _rss()
+            h_snapshot = FrozenHeuristicSnapshot(h)
+            actor_size_mb = sum(p.nelement() * p.element_size() for p in h_snapshot.actor.parameters()) / 1e6
+            n_skills = len(h_snapshot._frozen_skills)
+            mem_after = _rss()
+            print(f"[GRADUATION] {source_id}->{target_id}: snapshot actor={actor_size_mb:.2f}MB, "
+                  f"skills_in_snapshot={n_skills}, process_mem={mem_before:.2f}->{mem_after:.2f}GB", flush=True)
+            wrapper = HeuristicPolicyWrapper(heuristic=h_snapshot, target_node_id=target_id)
             add_shortcuts_to_graph(h.virtual_system, {(source_id, target_id): wrapper}, training_data)
+
+            # Record graduation snapshot for visualization
+            _graduated_so_far.append((source_id, target_id))
+            if graduation_snapshots is not None:
+                graduation_snapshots.append({
+                    "epoch": getattr(h, "_current_epoch", -1),
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "graduated_so_far": list(_graduated_so_far),
+                })
 
             cost = h.estimate_node_distance(source_id, target_id) if hasattr(h, "estimate_node_distance") else 1.0
             source_atoms = training_data.node_atoms[source_id]
@@ -1611,15 +1725,14 @@ def add_shortcuts_to_graph(
         return 0
 
     num_added = 0
-    shortcut_count = 0
+
 
     for (source_id, target_id), policy_wrapper in policy_dict.items():
         source_atoms = training_data.node_atoms[source_id]
         target_atoms = training_data.node_atoms[target_id]
 
-        # Create unique name for this shortcut
-        shortcut_name = f"Shortcut_{shortcut_count}"
-        shortcut_count += 1
+        # Create unique name for this shortcut based on source/target node IDs
+        shortcut_name = f"Shortcut_{source_id}to{target_id}"
 
         # Extract all unique objects from atoms to determine operator parameters
         all_objects: set[Object] = set()
@@ -1686,7 +1799,7 @@ def add_shortcuts_to_graph(
             if existing_op == shortcut_operator:
                 # Remove the stale skill for this operator and replace with the
                 # fresher one from the most recent graduation.
-                old_skills = {sk for sk in system.components.skills if sk.can_execute(existing_op)}
+                old_skills = {sk for sk in system.components.skills if sk._get_lifted_operator() == existing_op}
                 system.components.skills -= old_skills
                 system.components.skills.add(shortcut_skill)
                 print(
@@ -2266,6 +2379,7 @@ def run_pipeline(
                 heuristic=heuristic,
                 cfg=cfg,
                 checkpoint_callback=_ckpt_save_fn,
+                graduation_snapshots=results.graduation_snapshots,
             )
             # Final heuristic save after training completes
             if ckpt_dir and hasattr(heuristic, "save"):
