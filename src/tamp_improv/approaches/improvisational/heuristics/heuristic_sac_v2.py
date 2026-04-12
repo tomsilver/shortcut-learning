@@ -636,38 +636,78 @@ class SACv2Heuristic(BaseHeuristic):
                     s, a, her_r, s_, her_done, her_goal_vec, obs_raw, her_goal_node_id, step_source_id, ba
                 )
 
-    def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
-        """Get the base skill action for (obs, target_node), or zeros if unavailable."""
-        if not self.config.residualize or self.first_edge_dict is None:
+        def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
+            """Get the base skill action for (obs, target_node), or zeros if unavailable."""
+            if not self.config.residualize or self.first_edge_dict is None:
+                return np.zeros(self.action_dim, dtype=np.float32)
+
+            print(f"[DEBUG _get_base_action] target_node={target_node}, calling perceiver.step...", flush=True)
+            t_perc = time.time()
+            start_atoms = self.system.perceiver.step(obs)
+            print(f"[DEBUG _get_base_action] perceiver.step took {time.time()-t_perc:.3f}s, start_atoms={start_atoms}", flush=True)
+
+            goal_atoms = self._node_atoms_dict.get(target_node, set())
+            edge = self.first_edge_dict.get(
+                (frozenset(start_atoms), frozenset(goal_atoms)), None
+            )
+            print(f"[DEBUG _get_base_action] edge={'found' if edge is not None else 'None'}", flush=True)
+            if edge is not None:
+                operator = edge.operator
+                print(f"[DEBUG _get_base_action] operator={operator}", flush=True)
+                skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
+                print(f"[DEBUG _get_base_action] found {len(skills)} matching skills, types={[type(sk).__name__ for sk in skills]}", flush=True)
+                if skills:
+                    skill = skills[0]
+                    print(f"[DEBUG _get_base_action] calling skill.reset(operator)...", flush=True)
+                    t_reset = time.time()
+                    skill.reset(operator)
+                    print(f"[DEBUG _get_base_action] skill.reset took {time.time()-t_reset:.3f}s", flush=True)
+                    print(f"[DEBUG _get_base_action] calling skill.get_action(obs) directly (no thread)...", flush=True)
+                    t0 = time.time()
+                    try:
+                        raw = skill.get_action(obs)
+                        elapsed = time.time() - t0
+                        print(f"[DEBUG _get_base_action] skill.get_action returned in {elapsed:.3f}s, raw={raw}", flush=True)
+                        if raw is not None:
+                            ba = np.array(raw, dtype=np.float32).flatten()
+                            if ba.shape[0] == self.action_dim:
+                                return ba
+                    except Exception as e:
+                        print(f"[DEBUG _get_base_action] skill.get_action raised {type(e).__name__}: {e} after {time.time()-t0:.3f}s", flush=True)
             return np.zeros(self.action_dim, dtype=np.float32)
 
-        start_atoms = self.system.perceiver.step(obs)
-        goal_atoms = self._node_atoms_dict.get(target_node, set())
-        edge = self.first_edge_dict.get(
-            (frozenset(start_atoms), frozenset(goal_atoms)), None
-        )
-        if edge is not None:
-            operator = edge.operator
-            skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
-            if skills:
-                skill = skills[0]
-                skill.reset(operator)
-                t0 = time.time()
-                try:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                        raw = ex.submit(skill.get_action, obs).result(timeout=1)
-                    elapsed = time.time() - t0
-                    if raw is not None:
-                        ba = np.array(raw, dtype=np.float32).flatten()
-                        if ba.shape[0] == self.action_dim:
-                            print(f"[BASE_ACTION] node {target_node}: OK in {elapsed:.3f}s", flush=True)
-                            return ba
-                    print(f"[BASE_ACTION] node {target_node}: returned None in {elapsed:.3f}s", flush=True)
-                except concurrent.futures.TimeoutError:
-                    print(f"[TIMEOUT] skill.get_action hung for node {target_node} after {time.time()-t0:.3f}s, returning zeros", flush=True)
-                except Exception as e:
-                    print(f"[BASE_ACTION] skill.get_action failed for node {target_node} after {time.time()-t0:.3f}s: {e}", flush=True)
-        return np.zeros(self.action_dim, dtype=np.float32)
+    # def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
+    #     """Get the base skill action for (obs, target_node), or zeros if unavailable."""
+    #     if not self.config.residualize or self.first_edge_dict is None:
+    #         return np.zeros(self.action_dim, dtype=np.float32)
+
+    #     start_atoms = self.system.perceiver.step(obs)
+    #     goal_atoms = self._node_atoms_dict.get(target_node, set())
+    #     edge = self.first_edge_dict.get(
+    #         (frozenset(start_atoms), frozenset(goal_atoms)), None
+    #     )
+    #     if edge is not None:
+    #         operator = edge.operator
+    #         skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
+    #         if skills:
+    #             skill = skills[0]
+    #             skill.reset(operator)
+    #             t0 = time.time()
+    #             try:
+    #                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+    #                     raw = ex.submit(skill.get_action, obs).result(timeout=1)
+    #                 elapsed = time.time() - t0
+    #                 if raw is not None:
+    #                     ba = np.array(raw, dtype=np.float32).flatten()
+    #                     if ba.shape[0] == self.action_dim:
+    #                         print(f"[BASE_ACTION] node {target_node}: OK in {elapsed:.3f}s", flush=True)
+    #                         return ba
+    #                 print(f"[BASE_ACTION] node {target_node}: returned None in {elapsed:.3f}s", flush=True)
+    #             except concurrent.futures.TimeoutError:
+    #                 print(f"[TIMEOUT] skill.get_action hung for node {target_node} after {time.time()-t0:.3f}s, returning zeros", flush=True)
+    #             except Exception as e:
+    #                 print(f"[BASE_ACTION] skill.get_action failed for node {target_node} after {time.time()-t0:.3f}s: {e}", flush=True)
+    #     return np.zeros(self.action_dim, dtype=np.float32)
 
     def _select_action(
         self, state_flat: NDArray, goal_vec: NDArray, deterministic: bool = False,

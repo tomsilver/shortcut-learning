@@ -38,11 +38,11 @@ for RUN_DIR in "$SCRATCH_DIR"/outputs/sweep_*; do
     FULL_NAME="${RUN_NAME#sweep_}"
 
     # Skip if already completed (has results.pkl)
-    if [[ -f "$RUN_DIR/results.pkl" ]]; then
-        echo "SKIP $FULL_NAME — already has results.pkl"
-        SKIPPED=$((SKIPPED + 1))
-        continue
-    fi
+    # if [[ -f "$RUN_DIR/results.pkl" ]]; then
+    #     echo "SKIP $FULL_NAME — already has results.pkl"
+    #     SKIPPED=$((SKIPPED + 1))
+    #     continue
+    # fi
 
     # Skip ch7 residualize jobs (not nores)
     if [[ "$FULL_NAME" == *_ch7_* ]] && [[ "$FULL_NAME" != *_nores_* ]]; then
@@ -73,7 +73,7 @@ for RUN_DIR in "$SCRATCH_DIR"/outputs/sweep_*; do
     fi
 
     BASE_CONFIG=$(grep -m1 "^Config     : " "$LAST_OUT" | sed 's/^Config     : //')
-    ORIG_OVERRIDES=$(grep -m1 "^Overrides  : " "$LAST_OUT" | sed 's/^Overrides  : //')
+    ORIG_OVERRIDES=$(grep -m1 "^Overrides  : " "$LAST_OUT" | sed 's/^Overrides  : //' | sed 's/[+]*resume_from=[^ ]*//g')
 
     if [[ -z "$BASE_CONFIG" || -z "$ORIG_OVERRIDES" ]]; then
         echo "SKIP $FULL_NAME — could not parse Config/Overrides from $LAST_OUT"

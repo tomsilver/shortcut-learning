@@ -360,26 +360,26 @@ def run_evaluation_episode_with_caching(
     goal_atoms_list = episode_info.get("goal_node_atoms_list", [])
     init_node = episode_info.get("initial_node")
     goal_nodes = episode_info.get("goal_nodes")
-    print(f"[EVAL] Episode start: pos={start_pos}, node={init_node} atoms={init_atoms}")
-    print(f"[EVAL] Goal: nodes={goal_nodes} atoms={goal_atoms_list}")
+    print(f"[EVAL] Episode start: pos={start_pos}, node={init_node}")
+    print(f"[EVAL] Goal: nodes={goal_nodes}")
     print(f"[EVAL] First step result: terminate={step_result.terminate}, info={step_result.info}")
     print(f"[EVAL] Current path: {[(e.source.id, e.target.id) for e in approach.current_path] if approach.current_path else 'None'}")
 
     trajectory_positions: list[list[float]] = [_flatten_obs(obs)]
 
-    # Check for early termination cases from reset
-    if step_result.terminate:
-        # Check if it's "already at goal" (success) or "no path found" (failure)
+    # We ignore step_result from approach.reset() — it's a legacy artifact.
+    # The cached actions in approach.edge_action_cache are what we replay.
+    # Use best_eval_path to determine outcome:
+    #   - empty path + already_at_goal → success
+    #   - empty path otherwise         → failure (no path / unknown)
+    best_edges = approach.best_eval_path
+    if not best_edges:
         if step_result.info.get("already_at_goal", False):
             success = True
             print(f"[EVAL] Already at goal — success")
-        elif step_result.info.get("no_path_found", False):
-            success = False
-            print(f"[EVAL] WARNING: No path found from node {init_node} ({init_atoms}) to {goal_nodes} ({goal_atoms_list})")
         else:
-            # Other termination reasons - treat as failure
             success = False
-            print(f"[EVAL] WARNING: Unknown termination reason, info={step_result.info}")
+            print(f"[EVAL] No path found, info={step_result.info}")
         if config.render and can_render:
             cast(Any, system.env).close()
             system.env = recording_env
@@ -389,13 +389,6 @@ def run_evaluation_episode_with_caching(
         episode_info["trajectory_positions"] = trajectory_positions
         return total_reward, step_count, success, episode_info
 
-    best_edges = approach.best_eval_path
-    if not best_edges:
-        episode_info["success"] = success
-        episode_info["true_steps"] = step_count
-        episode_info["reward"] = total_reward
-        episode_info["trajectory_positions"] = trajectory_positions
-        return total_reward, step_count, success, episode_info
     prefix_ids_for_edge: list[tuple[int, ...]] = []
     running_prefix: tuple[int, ...] = ()
     for edge in best_edges:
@@ -416,23 +409,21 @@ def run_evaluation_episode_with_caching(
     # Note: we do NOT execute step_result.action here — the cached actions
     # already include the full action sequence for each edge. Executing the
     # reset action would shift the env state and desync from the cache.
-    for key in segments:
+    print(f"[EVAL] Cache has {len(approach.edge_action_cache)} entries")
+    print(f"[EVAL] Replay segments ({len(segments)}): {segments}")
+    for seg_idx, key in enumerate(segments):
         if done:
             break
         actions = approach.edge_action_cache.get(key, None)
         if actions is not None:
-            # Execute cached actions
+            print(f"[EVAL] Segment {seg_idx} {key}: CACHED ({len(actions)} actions)")
             for a in actions:
                 obs, reward, terminated, truncated, info = system.env.step(a)
                 trajectory_positions.append(_flatten_obs(obs))
                 total_reward += float(reward)
                 step_count += 1
-                done = bool(terminated or truncated)
-                if done:
-                    success = bool(terminated)
-                    break
         else:
-            # Execute using approach
+            print(f"[EVAL] Segment {seg_idx} {key}: NOT CACHED — falling back to approach.step()")
             for _ in range(approach.max_skill_steps):
                 step_result = approach.step(obs, total_reward, False, False, info)
                 obs, reward, terminated, truncated, info = system.env.step(
@@ -441,25 +432,15 @@ def run_evaluation_episode_with_caching(
                 trajectory_positions.append(_flatten_obs(obs))
                 total_reward += float(reward)
                 step_count += 1
-                done = bool(step_result.terminate or terminated or truncated)
                 if step_result.terminate or terminated or truncated:
-                    success = (step_result.terminate and not step_result.info.get("skill_failed", False)) or terminated
+                    done = True
                     break
-        if done:
-            break
 
-    if not done:
-        for _ in range(1, config.eval_max_steps):
-            step_result = approach.step(obs, total_reward, False, False, info)
-            obs, reward, terminated, truncated, info = system.env.step(
-                step_result.action
-            )
-            trajectory_positions.append(_flatten_obs(obs))
-            total_reward += float(reward)
-            step_count += 1
-            if step_result.terminate or terminated or truncated:
-                success = (step_result.terminate and not step_result.info.get("skill_failed", False)) or terminated
-                break
+    # After replaying all segments, check if final atoms satisfy the planning goal
+    final_atoms = approach.system.perceiver.step(obs)
+    goal_atoms_set = approach._goal if hasattr(approach, "_goal") else set()
+    success = bool(goal_atoms_set) and goal_atoms_set.issubset(final_atoms)
+    print(f"[EVAL] Final atom check: success={success} ({len(goal_atoms_set)} goal atoms, {len(final_atoms)} achieved)")
 
     if config.render and can_render:
         cast(Any, system.env).close()

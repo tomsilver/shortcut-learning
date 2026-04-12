@@ -270,7 +270,7 @@ class SmartRolloutsHeuristic(BaseHeuristic):
     def load(self, path: str) -> None:
         pass
 
-    def estimate_probability(self, source_node: int, target_node: int) -> float:
+    def estimate_probability(self, source_node: int, target_node: int, use_multi_rl: bool = True) -> float:
         """Estimate PPO success probability from empirical rollout success rate."""
         if self._success_counts is None:
             return 0.0

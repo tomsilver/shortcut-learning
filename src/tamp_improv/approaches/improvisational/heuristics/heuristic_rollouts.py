@@ -224,11 +224,8 @@ class RolloutsHeuristic(BaseHeuristic):
         Returns:
             Distance estimate
         """
-        # print(self._success_counts, self._success_counts is None)
         if self._success_counts is None:
-            raise RuntimeError(
-                "Must call multi_train() before estimate_node_distance()"
-            )
+            return float(self.max_steps_per_rollout)
 
         # Get success count
         success_count = self._success_counts.get((source_node, target_node), 0)
@@ -257,7 +254,7 @@ class RolloutsHeuristic(BaseHeuristic):
             Pruned training data
         """
         if self._success_counts is None:
-            raise RuntimeError("Must call multi_train() before prune()")
+            self._success_counts = {}
 
         # Allow overriding threshold
         threshold = kwargs.get("threshold", self.threshold)

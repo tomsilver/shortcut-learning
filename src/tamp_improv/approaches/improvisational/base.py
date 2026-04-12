@@ -198,6 +198,7 @@ class ImprovisationalTAMPApproach(BaseApproach[ObsType, ActType]):
         self._goal = goal
         self.observed_states = {}
         self.edge_action_cache.clear()
+        self.best_eval_path = []
         self.shortcuts_added_to_graph = 0
 
         print("[DBG] approach.reset: about to _create_planning_graph")
