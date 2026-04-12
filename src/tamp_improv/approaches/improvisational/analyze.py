@@ -638,4 +638,4 @@ def compute_true_node_distance(
     dists = []
     for s in sampled:
         dists.append(compute_true_distance(system, s, goal_node_atoms))
-    return np.max(dists)
+    return np.mean(dists)

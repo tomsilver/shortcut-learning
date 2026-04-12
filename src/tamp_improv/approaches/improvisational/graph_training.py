@@ -361,6 +361,7 @@ def collect_graph_based_training_data(
             shortcut_candidates = identify_shortcut_candidates(
                 planning_graph,
                 observed_states,
+                filter_diagonal_max_size=int(config.get("filter_diagonal_max_size", 0)),
             )
 
         selected_candidates = select_random_shortcuts(
@@ -467,13 +468,47 @@ def collect_goal_conditioned_training_data(
     return goal_train_data
 
 
+def _extract_row_col(atoms: frozenset) -> tuple[int, int] | None:
+    """Extract (row, col) from gridworld InRow*/InCol* atoms.
+
+    Returns None if either is missing (e.g. non-gridworld benchmark).
+    """
+    row, col = None, None
+    for atom in atoms:
+        name = atom.predicate.name
+        if name.startswith("InRow"):
+            try:
+                row = int(name[len("InRow"):])
+            except ValueError:
+                pass
+        elif name.startswith("InCol"):
+            try:
+                col = int(name[len("InCol"):])
+            except ValueError:
+                pass
+    if row is None or col is None:
+        return None
+    return row, col
+
+
 def identify_shortcut_candidates(
     planning_graph: PlanningGraph,
     observed_states: dict[int, list[ObsType]],
+    filter_diagonal_max_size: int = 0,
 ) -> list[ShortcutCandidate]:
-    """Identify potential shortcuts in the planning graph."""
+    """Identify potential shortcuts in the planning graph.
+
+    Args:
+        planning_graph: The planning graph to extract candidates from.
+        observed_states: Dict from node_id to list of observed states.
+        filter_diagonal_max_size: If > 0, drop diagonal shortcut candidates
+            (|dr| == |dc|) of size <= this value. Useful for gridworld
+            ablations where we want to exclude trivial 1x1 diagonals.
+            Has no effect on benchmarks without InRow*/InCol* atoms.
+    """
     nodes = list(planning_graph.nodes)
     shortcut_candidates = []
+    n_filtered_diag = 0
 
     for source_node in nodes:
         if source_node.id not in observed_states:
@@ -488,8 +523,6 @@ def identify_shortcut_candidates(
         for target_node in nodes:
             if source_node == target_node:
                 continue
-            # if target_node.id <= source_node.id:
-            #     continue
 
             has_direct_edge = False
             for edge in planning_graph.node_to_outgoing_edges.get(source_node, []):
@@ -509,6 +542,17 @@ def identify_shortcut_candidates(
             if has_shortcut_edge:
                 continue
 
+            # Optional gridworld-specific diagonal filter
+            if filter_diagonal_max_size > 0:
+                src_rc = _extract_row_col(source_node.atoms)
+                tgt_rc = _extract_row_col(target_node.atoms)
+                if src_rc is not None and tgt_rc is not None:
+                    dr = abs(src_rc[0] - tgt_rc[0])
+                    dc = abs(src_rc[1] - tgt_rc[1])
+                    if dr > 0 and dc > 0 and dr <= filter_diagonal_max_size and dc <= filter_diagonal_max_size:
+                        n_filtered_diag += 1
+                        continue
+
             shortcut_candidates.append(
                 ShortcutCandidate(
                     source_node=source_node,
@@ -519,6 +563,11 @@ def identify_shortcut_candidates(
                 )
             )
 
+    if filter_diagonal_max_size > 0 and n_filtered_diag > 0:
+        print(
+            f"[FILTER] Excluded {n_filtered_diag} diagonal shortcut candidates "
+            f"of size <= {filter_diagonal_max_size}"
+        )
     return shortcut_candidates
 
 

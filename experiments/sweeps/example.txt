@@ -21,7 +21,7 @@ name=ut_sac        config=unit_test             time=01:00:00  gpu=false  heuris
 name=ut_none       config=unit_test             time=01:00:00  gpu=false  heuristic.type=none    seed=1
 
 
-cd /n/fs/iterativesl/shortcut-learning && \
+cd /home/de7281/thesis/shortcut-learning && \
 bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch5_cd.txt && \
 bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch5_ct.txt && \
 bash experiments/slurm/launch_sweep.sh experiments/sweeps/ch5_ot.txt && \

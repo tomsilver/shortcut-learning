@@ -25,6 +25,7 @@ collection:
   num_cost_rollouts: 100
   load_data: false
   training_data_path: null
+  filter_diagonal_max_size: 0  # Drop diagonal shortcut candidates of size <= this (gridworld only). 0=no filter, 1=drop 1x1 diagonals, 2=drop 1x1 and 2x2, etc.
 
 heuristic:
   # Heuristic Parameters
@@ -87,8 +88,10 @@ heuristic:
     dist_quantile: 0.9  # Quantile for distance scaling when computing gains
     auto_dist_scale: true  # Whether to automatically set dist_scale based on quantile
     residualize: false  # Whether to residualize actor actions with base skill actions
+    residual_lam: 1.0  # Scaling factor on base action in residual actor (1.0=add base, 0.0=ignore base)
 
     num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+    node_distance_samples: 100
 
   # SAC V2 heuristic parameters
   sac:
@@ -128,9 +131,11 @@ heuristic:
     dist_quantile: 0.9
     auto_dist_scale: true
     residualize: false
+    residual_lam: 0.0  # Scaling factor on base action in residual actor (1.0=add base, 0.0=ignore base)
     max_atom_size: 50
 
     num_reliability_trials: 10  # Number of recent trials to estimate success probability for pruning (0 means use all trials)
+    node_distance_samples: 100
 
 # M = 10 * 100 * 10 = 10000
 policy:
@@ -157,7 +162,7 @@ policy:
 evaluation:
   render: false
   fast_eval: false
-  num_episodes: 50
+  num_episodes: 100
   max_episode_steps: 100
 
 

@@ -16,7 +16,7 @@ Key components:
 - Auto-entropy tuning: log_alpha updated to maintain target entropy
 """
 
-import concurrent.futures
+
 import copy
 import os
 import pickle
@@ -116,6 +116,7 @@ class SACV2HeuristicConfig:
     dist_quantile: float = 1.0
     auto_dist_scale: bool = False
     residualize: bool = False
+    residual_lam: float = 1.0  # Scaling factor on base action in residual actor (1.0=add base, 0.0=ignore base)
     max_atom_size: int = 50
 
     # Success tracking
@@ -329,6 +330,7 @@ class SACv2Heuristic(BaseHeuristic):
             self.actor = ResidualContinuousActor(
                 self.state_dim, self.action_dim, atom_dim, actor_hidden_dims,
                 action_low=self._action_low, action_high=self._action_high,
+                lam=self.config.residual_lam,
             ).to(device)
         else:
             self.actor = ContinuousActor(
@@ -400,6 +402,7 @@ class SACv2Heuristic(BaseHeuristic):
             self.actor = ResidualContinuousActor(
                 self.state_dim, self.action_dim, self.config.max_atom_size, actor_hidden_dims,
                 action_low=self._action_low, action_high=self._action_high,
+                lam=self.config.residual_lam,
             ).to(device)
         else:
             self.actor = ContinuousActor(
@@ -539,11 +542,14 @@ class SACv2Heuristic(BaseHeuristic):
         state_flat = self._flatten_state(current_state)
 
         for step in range(self.config.max_episode_steps):
+            print("Step:", step, "State:", state_flat)
             # Get base action from first_edge_dict for current state
             base_action = self._get_base_action(current_state, target_id)
+            print("Got base action:", base_action)
 
             # Stochastic action during training
             action = self._select_action(state_flat, goal_vec, deterministic=False, base_action=base_action)
+            print("Selected action:", action)
 
             next_state, _, terminated, truncated, _ = env.step(action)
             next_flat = self._flatten_state(next_state)
@@ -880,19 +886,13 @@ class SACv2Heuristic(BaseHeuristic):
             if skill is None:
                 continue
             skill.reset(operator)
-            try:
-                obs = obs_raws[i] if obs_raws is not None else None
-                if obs is not None:
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-                        action = ex.submit(skill.get_action, obs).result(timeout=1)
-                else:
-                    action = None
-            except concurrent.futures.TimeoutError:
-                print(f"[TIMEOUT] batch skill.get_action hung for pair ({source_node_ids[i]}->{goal_node_ids[i]}), returning zeros", flush=True)
-                action = None
-            except Exception as e:
-                print(f"[BASE_ACTION] batch skill.get_action failed for pair ({source_node_ids[i]}->{goal_node_ids[i]}): {e}", flush=True)
-                action = None
+            obs = obs_raws[i] if obs_raws is not None else None
+            action = None
+            if obs is not None:
+                try:
+                    action = skill.get_action(obs)
+                except Exception as e:
+                    print(f"[BASE_ACTION] batch skill.get_action failed for pair ({source_node_ids[i]}->{goal_node_ids[i]}): {e}", flush=True)
             if action is not None:
                 base_actions[i] = np.array(action, dtype=np.float32)
 
@@ -943,18 +943,24 @@ class SACv2Heuristic(BaseHeuristic):
     def _batch_estimate_raw_distances(self, pairs: list[tuple[int, int]]) -> np.ndarray:
         """Batch-compute raw (unscaled) estimated distances for all (src, tgt) pairs.
 
-        Replaces 30,000 serial forward passes with one batched GPU call.
+        For each pair, samples node_distance_samples source states and averages
+        the Q-based distance estimates across them to reduce variance.
         Returns array of shape (len(pairs),) with raw distances (dist_scale=1).
         """
         device = torch.device(self.config.device)
+        k = self.config.node_distance_samples
+
+        # Build batched inputs: k samples per pair → total batch size = len(pairs) * k
         states_list = []
         goals_list = []
         for src, tgt in pairs:
             source_states = self.training_data.node_states[src]
-            state = random.choice(source_states)
-            states_list.append(self._flatten_state(state))
+            samples = random.sample(source_states, min(k, len(source_states)))
             target_atoms = self._node_atoms_dict.get(tgt, set())
-            goals_list.append(self.create_atom_vector(target_atoms))
+            goal_vec = self.create_atom_vector(target_atoms)
+            for s in samples:
+                states_list.append(self._flatten_state(s))
+                goals_list.append(goal_vec)
 
         states_t = torch.FloatTensor(np.array(states_list, dtype=np.float32)).to(device)
         goals_t = torch.FloatTensor(np.array(goals_list, dtype=np.float32)).to(device)
@@ -965,7 +971,16 @@ class SACv2Heuristic(BaseHeuristic):
                 self.q1(states_t, actions, goals_t),
                 self.q2(states_t, actions, goals_t),
             )
-        return np.maximum(0.0, -q.cpu().numpy())  # shape (N,), unscaled
+        raw_all = np.maximum(0.0, -q.cpu().numpy().squeeze(-1))  # shape (total_batch,)
+
+        # Average over the k samples per pair
+        result = np.empty(len(pairs), dtype=np.float32)
+        idx = 0
+        for i, (src, _) in enumerate(pairs):
+            n_samples = min(k, len(self.training_data.node_states[src]))
+            result[i] = raw_all[idx:idx + n_samples].mean()
+            idx += n_samples
+        return result
 
     # ── Gain methods (identical to cmd_v2 / crl_v2) ──────────────────
 
@@ -975,12 +990,43 @@ class SACv2Heuristic(BaseHeuristic):
         if L is None:
             L = self.estimate_node_distance(x, y)
 
+        L_old = d[x, y]
         U = np.where(np.isfinite(d[:, x]))[0]
         V = np.where(np.isfinite(d[y, :]))[0]
 
         new_paths = d[U, x][:, None] + L + d[y, V][None, :]
         old_paths = np.minimum(d[np.ix_(U, V)], self.config.max_episode_steps)
-        return float(np.sum(np.maximum(0, old_paths - new_paths)))
+        old_paths = np.minimum(old_paths, d[U, x][:, None] + L_old + d[y, V][None, :])
+        savings = np.maximum(0, old_paths - new_paths)
+        total_gain = float(np.sum(savings))
+
+        # ── Debug: dump contributors when gain looks suspicious ──
+        debug = getattr(self, "_debug_exact_gain", True)
+        if debug:
+            d_xy_direct = d[x, y]
+            print(
+                f"[EXACT_GAIN] x={x} y={y} L={L:.3f} d[x,y]={d_xy_direct} "
+                f"|U|={len(U)} |V|={len(V)} total_gain={total_gain:.3f}",
+                flush=True,
+            )
+            if total_gain > 0 and savings.size > 0:
+                # Top 10 contributing (u, v) pairs
+                flat_idx = np.argsort(savings.ravel())[::-1][:10]
+                for fi in flat_idx:
+                    ui, vi = np.unravel_index(fi, savings.shape)
+                    s = savings[ui, vi]
+                    if s <= 0:
+                        break
+                    u_node = int(U[ui])
+                    v_node = int(V[vi])
+                    print(
+                        f"  ({u_node}->{v_node}): old={old_paths[ui,vi]:.1f} "
+                        f"new={new_paths[ui,vi]:.1f} (d[{u_node},{x}]={d[u_node,x]:.1f} "
+                        f"+ L={L:.1f} + d[{y},{v_node}]={d[y,v_node]:.1f}) save={s:.2f}",
+                        flush=True,
+                    )
+
+        return total_gain
 
     def estimate_gain(self, source_node: int, target_node: int, L: float | None = None) -> float:
         x, y = source_node, target_node
@@ -1046,6 +1092,10 @@ class SACv2Heuristic(BaseHeuristic):
                 self.original_node_pair_graph_dists[src, tgt] for src, tgt in shortcuts
             ])
             ratios = raw_dists / (orig + 1e-8)
+            print("Shortcuts:", shortcuts)
+            print("Raw dists:", raw_dists)
+            print("Original dists:", orig)
+            print("Ratios:", ratios)
             valid = np.isfinite(ratios) & (orig > 0)
             if valid.any():
                 q = self.config.dist_quantile
@@ -1115,6 +1165,7 @@ class SACv2Heuristic(BaseHeuristic):
         self._update_gains()
 
         for epoch in range(self.config.num_epochs_per_round):
+            self._current_epoch = epoch
             # Collect trajectories
             for _ in range(self.config.trajectories_per_epoch):
                 trajectory, goal_vec, target_id, source_id = self._collect_trajectory()

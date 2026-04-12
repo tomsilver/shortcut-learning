@@ -13,7 +13,7 @@ import numpy as np
 from tamp_improv.approaches.improvisational.graph_training import compute_graph_distances
 from tamp_improv.approaches.improvisational.policies.base import GoalConditionedTrainingData
 
-DEFAULT_DATA_ROOT = Path("/n/fs/iterativesl/slap_training_data")
+DEFAULT_DATA_ROOT = Path("/scratch/gpfs/TSILVER/de7281/shortcut_learning/training_data")
 
 ENVS = ["cleanup_table", "cluttered_drawer", "obstacle_tower"]
 

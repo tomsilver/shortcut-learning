@@ -189,7 +189,7 @@ class SmartRolloutsHeuristic(BaseHeuristic):
             return float(self.config.max_steps_per_rollout)
         lengths = self._success_lens.get((source_node, target_node), [])
         if lengths:
-            return self.config.dist_scale * float(np.mean(lengths))
+            return self.config.dist_scale * float(np.min(lengths))
         return float(self.config.max_steps_per_rollout)
 
     # ── Gain methods (identical to sac_v2 / crl_v2 / cmd_v2) ─────────

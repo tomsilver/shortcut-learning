@@ -25,7 +25,7 @@ collection:
   planner_id: pyperplan
   num_cost_rollouts: 10
   load_data: true
-  training_data_path: /n/fs/iterativesl/training_data/cleanup_table
+  training_data_path: /scratch/gpfs/TSILVER/de7281/shortcut_learning/training_data/cleanup_table
 
 heuristic:
   # Heuristic Parameters
