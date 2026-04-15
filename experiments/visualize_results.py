@@ -329,8 +329,15 @@ def _scatter_distances(
     ax.grid(True, alpha=0.3)
 
 
-def plot_estimated_vs_true_distance(results: Any, save_dir: Path) -> None:
-    """Scatter of estimated vs true distance AND estimated vs graph distance."""
+def plot_estimated_vs_true_distance(
+    results: Any, save_dir: Path, auto_rescale: bool = False
+) -> None:
+    """Scatter of estimated vs true distance AND estimated vs graph distance.
+
+    If auto_rescale=True, estimated distances are divided by the 90th-percentile
+    ratio (est/graph) so that only ~10% of shortcuts have est > graph. Useful
+    when the heuristic was trained with auto_dist_scale=False.
+    """
     # Get estimated distances from the last training round
     est_dists: dict[tuple[int, int], float] | None = None
     for rd in reversed(results.training_rounds):
@@ -344,6 +351,21 @@ def plot_estimated_vs_true_distance(results: Any, save_dir: Path) -> None:
     true_dists = results.true_distances or {}
     graph_dists = results.graph_distances or {}
     pruned_set = set(results.pruned_shortcuts) if results.pruned_shortcuts else set()
+
+    # Optionally auto-rescale estimated distances using the 90th-percentile
+    # ratio against graph distances (mirrors _update_gains' auto_dist_scale).
+    if auto_rescale and graph_dists:
+        ratios = []
+        for k, ed in est_dists.items():
+            gd = graph_dists.get(k)
+            if gd is not None and np.isfinite(gd) and gd > 1e-8:
+                ratios.append(ed / gd)
+        if ratios:
+            q90 = float(np.quantile(ratios, 0.9))
+            if q90 > 0 and np.isfinite(q90):
+                scale = 1.0 / q90 if q90 > 1.0 else 1.0
+                print(f"[AUTO-RESCALE] est/graph q90={q90:.3f} → scale={scale:.4f}")
+                est_dists = {k: v * scale for k, v in est_dists.items()}
 
     has_true = bool(set(true_dists) & set(est_dists))
     has_graph = bool(set(graph_dists) & set(est_dists))
@@ -369,13 +391,19 @@ def plot_estimated_vs_true_distance(results: Any, save_dir: Path) -> None:
         ax_idx += 1
 
     if has_graph:
-        keys = sorted(set(graph_dists) & set(est_dists))
+        # Drop outliers: pairs whose graph distance is at/near max_steps
+        # (unreachable or capped — they skew the correlation).
+        GRAPH_DIST_OUTLIER_CUTOFF = 5000
+        keys = sorted(
+            k for k in (set(graph_dists) & set(est_dists))
+            if graph_dists[k] < GRAPH_DIST_OUTLIER_CUTOFF
+        )
         graph_arr = np.array([graph_dists[k] for k in keys])
         est_arr = np.array([est_dists[k] for k in keys])
         is_pruned = np.array([k in pruned_set for k in keys])
         _scatter_distances(axes[ax_idx], graph_arr, est_arr, is_pruned,
                            "Graph Distance", "Estimated Distance",
-                           "Estimated vs Graph Distance")
+                           f"Estimated vs Graph Distance (graph_dist < {GRAPH_DIST_OUTLIER_CUTOFF:.0f})")
 
     plt.tight_layout()
     plt.savefig(save_dir / "distance_scatterplots.png", dpi=150, bbox_inches="tight")
@@ -1082,6 +1110,9 @@ def main() -> None:
     parser.add_argument("results_dir", type=str, help="Directory containing results.pkl")
     parser.add_argument("--output-dir", type=str, default=None,
                         help="Directory for output plots (default: <results_dir>/plots)")
+    parser.add_argument("--auto-rescale", action="store_true",
+                        help="Rescale estimated distances at viz time using 90th-pct "
+                             "ratio (use when heuristic was trained with auto_dist_scale=False)")
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
@@ -1096,7 +1127,7 @@ def main() -> None:
 
     plot_shortcut_quality_per_round(results, output_dir)
     plot_heuristic_metrics_per_round(results, output_dir)
-    plot_estimated_vs_true_distance(results, output_dir)
+    plot_estimated_vs_true_distance(results, output_dir, auto_rescale=args.auto_rescale)
     plot_pruned_shortcuts_on_grid(results, output_dir)
     plot_graduation_snapshots(results, output_dir)
     plot_virtual_shortcuts_per_round(results, output_dir)

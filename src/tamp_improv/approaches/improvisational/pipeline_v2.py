@@ -698,8 +698,13 @@ def _extract_heuristic_round_data(
             counts[(src, tgt)] = int(heuristic.node_pair_samples[src, tgt])
         data["ucb_sample_counts"] = counts
 
-    if hasattr(heuristic, "node_pair_gains"):
+    if hasattr(heuristic, "node_pair_prob_gains"):
         gains: dict[tuple[int, int], float] = {}
+        for src, tgt in training_data.unique_shortcuts:
+            gains[(src, tgt)] = float(heuristic.node_pair_prob_gains[src, tgt])
+        data["gains"] = gains
+    elif hasattr(heuristic, "node_pair_gains"):
+        gains = {}
         for src, tgt in training_data.unique_shortcuts:
             gains[(src, tgt)] = float(heuristic.node_pair_gains[src, tgt])
         data["gains"] = gains

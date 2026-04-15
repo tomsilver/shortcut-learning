@@ -280,10 +280,9 @@ class SACv2Heuristic(BaseHeuristic):
             for node_id, atoms in self._node_atoms_dict.items()
         }
 
-        # UCB / gain arrays
+        # UCB / prob-gain arrays
         self.total_samples = 0
         self.node_pair_samples = np.zeros((self.num_nodes, self.num_nodes))
-        self.node_pair_gains = np.zeros((self.num_nodes, self.num_nodes))
         self.original_node_pair_graph_dists = np.zeros((self.num_nodes, self.num_nodes))
         self.node_pair_graph_dists = np.zeros((self.num_nodes, self.num_nodes))
         for (i, j), dist in graph_distances.items():
@@ -297,6 +296,12 @@ class SACv2Heuristic(BaseHeuristic):
 
         self.node_pair_successes: dict[tuple[int, int], Any] = {}
         self._graduation_cooldown: dict[tuple[int, int], int] = {}
+        # Graduated pairs are permanently removed from UCB sampling.
+        self._graduated_pairs: set[tuple[int, int]] = set()
+        self.active_pairs: list[tuple[int, int]] = list(self.valid_pairs)
+        self.active_mask = self.valid_pairs_mask.copy()
+        # prob_gain_matrix is refreshed inside _update_gains during training.
+        self.node_pair_prob_gains = np.zeros((self.num_nodes, self.num_nodes))
         for (i, j) in self.valid_pairs:
             k = self.config.num_reliability_trials
             if k > 0:
@@ -430,7 +435,7 @@ class SACv2Heuristic(BaseHeuristic):
         critic_losses: list[float] = []
         actor_losses: list[float] = []
 
-        self._update_gains()
+        self._update_gains(normalize=True)
 
         for epoch in range(self.config.num_epochs_per_round):
             import time as _time
@@ -451,7 +456,7 @@ class SACv2Heuristic(BaseHeuristic):
                         actor_losses.append(a_loss)
 
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
-                self._update_gains()
+                self._update_gains(normalize=True)
 
             _t_update = _time.time() - _t_update
 
@@ -487,36 +492,38 @@ class SACv2Heuristic(BaseHeuristic):
         """
         node_ids = list(self.training_data.node_states.keys())
 
-        # Sample (source, target) node pair
-        if self.config.sampling_method == "uniform":
+        # Sample (source, target) from active (non-graduated) pairs.
+        if not self.active_pairs:
+            # Everything has graduated — fall back to uniform over all pairs
             idx = self.rng.integers(len(self.valid_pairs))
             source_id, target_id = self.valid_pairs[idx]
-        elif self.config.sampling_method == "ucb":
-            gains = self.node_pair_gains
-            ucbs = np.sqrt(
-                2 * np.log(max(self.total_samples, 1))
-                / (self.node_pair_samples + 1e-8)
-            )
-            weights = np.where(self.valid_pairs_mask, gains + self.config.ucb_beta * ucbs, -np.inf)
-            flat_idx = int(np.argmax(weights))
-            source_id, target_id = flat_idx // self.num_nodes, flat_idx % self.num_nodes
-        elif self.config.sampling_method == "stochastic_ucb":
-            gains = self.node_pair_gains
-            ucbs = np.sqrt(
-                2 * np.log(max(self.total_samples, 1))
-                / (self.node_pair_samples + 1e-8)
-            )
-            weights = gains + self.config.ucb_beta * ucbs
-            weights = np.where(self.valid_pairs_mask, weights, -np.inf)
-            exp_w = np.exp(weights - np.max(weights))
-            exp_w = np.where(self.valid_pairs_mask, exp_w, 0.0)
-            probs = exp_w / exp_w.sum()
-            flat_idx = int(
-                self.rng.choice(self.num_nodes * self.num_nodes, p=probs.flatten())
-            )
-            source_id, target_id = flat_idx // self.num_nodes, flat_idx % self.num_nodes
+        elif self.config.sampling_method == "uniform":
+            idx = self.rng.integers(len(self.active_pairs))
+            source_id, target_id = self.active_pairs[idx]
         else:
-            raise ValueError(f"Unknown sampling_method: {self.config.sampling_method}")
+            # UCB weight = prob * gain + beta * sqrt(2 log N / n_pair)
+            ucbs = np.sqrt(
+                2 * np.log(max(self.total_samples, 1))
+                / (self.node_pair_samples + 1e-8)
+            )
+            weights = np.where(
+                self.active_mask,
+                self.node_pair_prob_gains + self.config.ucb_beta * ucbs,
+                -np.inf,
+            )
+            if self.config.sampling_method == "ucb":
+                flat_idx = int(np.argmax(weights))
+                source_id, target_id = flat_idx // self.num_nodes, flat_idx % self.num_nodes
+            elif self.config.sampling_method == "stochastic_ucb":
+                exp_w = np.exp(weights - np.max(weights))
+                exp_w = np.where(self.active_mask, exp_w, 0.0)
+                probs = exp_w / exp_w.sum()
+                flat_idx = int(
+                    self.rng.choice(self.num_nodes * self.num_nodes, p=probs.flatten())
+                )
+                source_id, target_id = flat_idx // self.num_nodes, flat_idx % self.num_nodes
+            else:
+                raise ValueError(f"Unknown sampling_method: {self.config.sampling_method}")
 
         self.node_pair_samples[source_id, target_id] += 1
         self.total_samples += 1
@@ -542,14 +549,10 @@ class SACv2Heuristic(BaseHeuristic):
         state_flat = self._flatten_state(current_state)
 
         for step in range(self.config.max_episode_steps):
-            print("Step:", step, "State:", state_flat)
             # Get base action from first_edge_dict for current state
             base_action = self._get_base_action(current_state, target_id)
-            print("Got base action:", base_action)
-
             # Stochastic action during training
             action = self._select_action(state_flat, goal_vec, deterministic=False, base_action=base_action)
-            print("Selected action:", action)
 
             next_state, _, terminated, truncated, _ = env.step(action)
             next_flat = self._flatten_state(next_state)
@@ -642,45 +645,31 @@ class SACv2Heuristic(BaseHeuristic):
                     s, a, her_r, s_, her_done, her_goal_vec, obs_raw, her_goal_node_id, step_source_id, ba
                 )
 
-        def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
-            """Get the base skill action for (obs, target_node), or zeros if unavailable."""
-            if not self.config.residualize or self.first_edge_dict is None:
-                return np.zeros(self.action_dim, dtype=np.float32)
-
-            print(f"[DEBUG _get_base_action] target_node={target_node}, calling perceiver.step...", flush=True)
-            t_perc = time.time()
-            start_atoms = self.system.perceiver.step(obs)
-            print(f"[DEBUG _get_base_action] perceiver.step took {time.time()-t_perc:.3f}s, start_atoms={start_atoms}", flush=True)
-
-            goal_atoms = self._node_atoms_dict.get(target_node, set())
-            edge = self.first_edge_dict.get(
-                (frozenset(start_atoms), frozenset(goal_atoms)), None
-            )
-            print(f"[DEBUG _get_base_action] edge={'found' if edge is not None else 'None'}", flush=True)
-            if edge is not None:
-                operator = edge.operator
-                print(f"[DEBUG _get_base_action] operator={operator}", flush=True)
-                skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
-                print(f"[DEBUG _get_base_action] found {len(skills)} matching skills, types={[type(sk).__name__ for sk in skills]}", flush=True)
-                if skills:
-                    skill = skills[0]
-                    print(f"[DEBUG _get_base_action] calling skill.reset(operator)...", flush=True)
-                    t_reset = time.time()
-                    skill.reset(operator)
-                    print(f"[DEBUG _get_base_action] skill.reset took {time.time()-t_reset:.3f}s", flush=True)
-                    print(f"[DEBUG _get_base_action] calling skill.get_action(obs) directly (no thread)...", flush=True)
-                    t0 = time.time()
-                    try:
-                        raw = skill.get_action(obs)
-                        elapsed = time.time() - t0
-                        print(f"[DEBUG _get_base_action] skill.get_action returned in {elapsed:.3f}s, raw={raw}", flush=True)
-                        if raw is not None:
-                            ba = np.array(raw, dtype=np.float32).flatten()
-                            if ba.shape[0] == self.action_dim:
-                                return ba
-                    except Exception as e:
-                        print(f"[DEBUG _get_base_action] skill.get_action raised {type(e).__name__}: {e} after {time.time()-t0:.3f}s", flush=True)
+    def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
+        """Get the base skill action for (obs, target_node), or zeros if unavailable."""
+        if not self.config.residualize or self.first_edge_dict is None:
             return np.zeros(self.action_dim, dtype=np.float32)
+
+        start_atoms = self.system.perceiver.step(obs)
+        goal_atoms = self._node_atoms_dict.get(target_node, set())
+        edge = self.first_edge_dict.get(
+            (frozenset(start_atoms), frozenset(goal_atoms)), None
+        )
+        if edge is not None:
+            operator = edge.operator
+            skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
+            if skills:
+                skill = skills[0]
+                skill.reset(operator)
+                try:
+                    raw = skill.get_action(obs)
+                    if raw is not None:
+                        ba = np.array(raw, dtype=np.float32).flatten()
+                        if ba.shape[0] == self.action_dim:
+                            return ba
+                except Exception:
+                    pass
+        return np.zeros(self.action_dim, dtype=np.float32)
 
     # def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
     #     """Get the base skill action for (obs, target_node), or zeros if unavailable."""
@@ -1075,7 +1064,7 @@ class SACv2Heuristic(BaseHeuristic):
             self._node_medoids[node_id] = best_state
         print("Updated node medoids.")
 
-    def _update_gains(self) -> None:
+    def _update_gains(self, normalize: bool = False) -> None:
         print("\nUpdating node pair gains...")
 
         shortcuts = list(self.training_data.unique_shortcuts)
@@ -1106,10 +1095,23 @@ class SACv2Heuristic(BaseHeuristic):
                     self.config.dist_scale = 1.0
             print(f"  Auto-set dist_scale={self.config.dist_scale:.4f}")
 
-        # Apply dist_scale and compute gains — no more forward passes
+        # Compute prob-weighted gains for active pairs. Everything downstream
+        # (UCB sampling, pruning, graduation) reads from node_pair_prob_gains.
+        self.node_pair_prob_gains = np.zeros((self.num_nodes, self.num_nodes))
         for (src, tgt), raw_L in zip(shortcuts, raw_dists):
+            if (src, tgt) in self._graduated_pairs:
+                continue
             L = self.config.dist_scale * float(raw_L)
-            self.node_pair_gains[src, tgt] = self.get_gain(src, tgt, L)
+            g = self.get_gain(src, tgt, L)
+            p = self.estimate_probability(int(src), int(tgt), use_multi_rl=False)
+            self.node_pair_prob_gains[src, tgt] = p * g
+
+        if normalize:
+            # Normalize prob-gains to [0, 1] so UCB beta is on the same scale.
+            max_pg = float(np.max(self.node_pair_prob_gains))
+            if max_pg > 0:
+                self.node_pair_prob_gains = self.node_pair_prob_gains / max_pg
+                print(f"  Normalized prob-gains by max={max_pg:.4f}")
 
         print("Updated node pair gains.\n")
 
@@ -1162,7 +1164,7 @@ class SACv2Heuristic(BaseHeuristic):
         critic_losses: list[float] = []
         actor_losses: list[float] = []
 
-        self._update_gains()
+        self._update_gains(normalize=True)
 
         for epoch in range(self.config.num_epochs_per_round):
             self._current_epoch = epoch
@@ -1176,16 +1178,18 @@ class SACv2Heuristic(BaseHeuristic):
                 if self._graduation_cooldown.get(pair, 0) > 0:
                     self._graduation_cooldown[pair] -= 1
                 else:
-                    successes = self.node_pair_successes.get(pair, [])
-                    k = self.config.num_reliability_trials
-                    if k > 0 and len(successes) >= k and np.mean(successes) > success_threshold:
-                        print(f"Graduating pair ({source_id} -> {target_id}) with success rate {np.mean(successes):.2f}")
+                    p = self.estimate_probability(int(source_id), int(target_id), use_multi_rl=False)
+                    if p > success_threshold:
+                        print(f"Graduating pair ({source_id} -> {target_id}) with success prob {p:.2f}")
                         if graduate_fn is not None:
                             graduate_fn(self, source_id, target_id)
                         self._update_graph_distances(source_id, target_id)
                         self._update_first_edge_dict(source_id, target_id)
-                        self._update_gains()
-                        self._graduation_cooldown[pair] = k
+                        # Permanently remove this pair from active sampling.
+                        self._graduated_pairs.add(pair)
+                        self.active_mask[source_id, target_id] = False
+                        self.active_pairs = [ap for ap in self.active_pairs if ap != pair]
+                        self._update_gains(normalize=True)
 
             if (epoch + 1) % self.config.learn_frequency == 0:
                 if len(self.replay_buffer) >= self.config.batch_size:
@@ -1195,7 +1199,7 @@ class SACv2Heuristic(BaseHeuristic):
                         actor_losses.append(a_loss)
 
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
-                self._update_gains()
+                self._update_gains(normalize=True)
 
             if (epoch + 1) % 1 == 0 or epoch == 0:
                 c_str = f"{critic_losses[-1]:.4f}" if critic_losses else "N/A"
@@ -1220,12 +1224,12 @@ class SACv2Heuristic(BaseHeuristic):
     def estimate_weight(self, source_node: int, target_node: int) -> float:
         if source_node == target_node:
             return 0.0
-        gain = self.node_pair_gains[source_node, target_node]
+        pg = self.node_pair_prob_gains[source_node, target_node]
         ucb = np.sqrt(
             2 * np.log(max(self.total_samples, 1))
             / (self.node_pair_samples[source_node, target_node] + 1e-8)
         )
-        return gain + self.config.ucb_beta * ucb
+        return pg + self.config.ucb_beta * ucb
 
     # ── Pruning (identical to crl_v2) ────────────────────────────────
 
@@ -1260,15 +1264,24 @@ class SACv2Heuristic(BaseHeuristic):
             k = self.config.num_reliability_trials
             trials = self.node_pair_successes.get((source_node, target_node), [])
             if len(trials) >= k > 0:
-                return float(np.mean(trials))
-            return 0.0
+                p = float(np.mean(trials))
+            else:
+                p = 0.0
+            if getattr(self, "_debug_est_prob", True):
+                print(f"[EST_PROB] x={source_node} y={target_node} "
+                      f"n_trials={len(trials)} p={p:.3f}", flush=True)
+            return p
         est_dist = self.estimate_node_distance(source_node, target_node)
         if est_dist <= 0:
             p_rr = 1.0
         else:
             p_rr = np.clip(np.exp(-est_dist**2 / (2 * self.config.max_episode_steps)), 0, 1)
         k = np.log(0.5) / np.log(1 - 0.05)  # threshold = 0.05
-        return 1 - (1 - p_rr)**k
+        p = float(1 - (1 - p_rr) ** k)
+        if getattr(self, "_debug_est_prob", True):
+            print(f"[EST_PROB] x={source_node} y={target_node} "
+                  f"est_dist={est_dist:.3f} p={p:.3f}", flush=True)
+        return p
 
     def prune(self, max_shortcuts: int, use_multi_rl: bool = False) -> "GoalConditionedTrainingData":
         print(f"\nPruning greedily to max_shortcuts={max_shortcuts}")
@@ -1288,7 +1301,7 @@ class SACv2Heuristic(BaseHeuristic):
         starts = np.array([x for x, _ in self.training_data.unique_shortcuts])
         ends = np.array([y for _, y in self.training_data.unique_shortcuts])
 
-        curr_gains = self.node_pair_gains.copy()
+        curr_prob_gains = self.node_pair_prob_gains.copy()
         curr_dists = self.node_pair_graph_dists.copy()  # post-graduation dists to restore
         self.node_pair_graph_dists = self.original_node_pair_graph_dists.copy()
 
@@ -1297,30 +1310,24 @@ class SACv2Heuristic(BaseHeuristic):
         self.config.auto_dist_scale = False
 
         for i in range(max_shortcuts):
-            self._update_gains()
-            gains = self.node_pair_gains[starts, ends]
+            self._update_gains()  # refreshes node_pair_prob_gains
+            scores = self.node_pair_prob_gains[starts, ends]
 
-            # Compute success probabilities
-            probs = np.zeros(len(starts))
-            for j, (s, t) in enumerate(zip(starts, ends)):
-                probs[j] = self.estimate_probability(int(s), int(t), use_multi_rl=use_multi_rl)
-
-            if np.any(probs > 0):
-                scores = probs * gains
+            if float(np.max(scores)) <= 0:
+                # All prob-gains are 0 — no meaningful signal, sample uniformly
+                best = int(self.rng.integers(len(starts)))
+                print(f"  (all prob_gains=0, sampling uniformly)")
             else:
-                scores = gains  # Fall back to pure gain if no pair has enough data
-
-            best = int(np.argmax(scores))
+                best = int(np.argmax(scores))
             src, tgt = int(starts[best]), int(ends[best])
-            p = probs[best]
             pruned_pairs.append((src, tgt))
             self._update_graph_distances(src, tgt)
             starts = np.delete(starts, best)
             ends = np.delete(ends, best)
-            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (gain={gains[best]:.2f}, p={p:.2f}, score={scores[best]:.2f})")
+            print(f"  Selected shortcut {i+1}: {src} -> {tgt} (prob_gain={scores[best]:.4f})")
 
         self.config.auto_dist_scale = prev_auto
-        self.node_pair_gains = curr_gains
+        self.node_pair_prob_gains = curr_prob_gains
         self.node_pair_graph_dists = curr_dists
 
         return self._build_pruned_data(pruned_pairs)

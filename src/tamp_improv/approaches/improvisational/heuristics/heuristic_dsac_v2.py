@@ -402,7 +402,7 @@ class DSACv2Heuristic(BaseHeuristic):
         critic_losses: list[float] = []
         actor_losses: list[float] = []
 
-        self._update_gains()
+        self._update_gains(normalize=True)
 
         for epoch in range(self.config.num_epochs_per_round):
             for _ in range(self.config.trajectories_per_epoch):
@@ -417,7 +417,7 @@ class DSACv2Heuristic(BaseHeuristic):
                         actor_losses.append(a_loss)
 
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
-                self._update_gains()
+                self._update_gains(normalize=True)
 
             if (epoch + 1) % 1 == 0 or epoch == 0:
                 c_str = f"{critic_losses[-1]:.4f}" if critic_losses else "N/A"
@@ -573,39 +573,25 @@ class DSACv2Heuristic(BaseHeuristic):
         if not self.config.residualize or self.first_edge_dict is None:
             return np.zeros(self.action_dim, dtype=np.float32)
 
-        print(f"[DEBUG _get_base_action] target_node={target_node}, calling perceiver.step...", flush=True)
-        t_perc = time.time()
         start_atoms = self.system.perceiver.step(obs)
-        print(f"[DEBUG _get_base_action] perceiver.step took {time.time()-t_perc:.3f}s, start_atoms={start_atoms}", flush=True)
-
         goal_atoms = self._node_atoms_dict.get(target_node, set())
         edge = self.first_edge_dict.get(
             (frozenset(start_atoms), frozenset(goal_atoms)), None
         )
-        print(f"[DEBUG _get_base_action] edge={'found' if edge is not None else 'None'}", flush=True)
         if edge is not None:
             operator = edge.operator
-            print(f"[DEBUG _get_base_action] operator={operator}", flush=True)
             skills = [sk for sk in self.virtual_system.skills if sk.can_execute(operator)]
-            print(f"[DEBUG _get_base_action] found {len(skills)} matching skills, types={[type(sk).__name__ for sk in skills]}", flush=True)
             if skills:
                 skill = skills[0]
-                print(f"[DEBUG _get_base_action] calling skill.reset(operator)...", flush=True)
-                t_reset = time.time()
                 skill.reset(operator)
-                print(f"[DEBUG _get_base_action] skill.reset took {time.time()-t_reset:.3f}s", flush=True)
-                print(f"[DEBUG _get_base_action] calling skill.get_action(obs) directly (no thread)...", flush=True)
-                t0 = time.time()
                 try:
                     raw = skill.get_action(obs)
-                    elapsed = time.time() - t0
-                    print(f"[DEBUG _get_base_action] skill.get_action returned in {elapsed:.3f}s, raw={raw}", flush=True)
                     if raw is not None:
                         ba = np.array(raw, dtype=np.float32).flatten()
                         if ba.shape[0] == self.action_dim:
                             return ba
-                except Exception as e:
-                    print(f"[DEBUG _get_base_action] skill.get_action raised {type(e).__name__}: {e} after {time.time()-t0:.3f}s", flush=True)
+                except Exception:
+                    pass
         return np.zeros(self.action_dim, dtype=np.float32)
         
     # def _get_base_action(self, obs: "ObsType", target_node: int) -> NDArray:
@@ -1003,7 +989,7 @@ class DSACv2Heuristic(BaseHeuristic):
                     best_state = state
             self._node_medoids[node_id] = best_state
 
-    def _update_gains(self) -> None:
+    def _update_gains(self, normalize: bool = False) -> None:
         shortcuts = list(self.training_data.unique_shortcuts)
         if not shortcuts:
             return
@@ -1028,6 +1014,13 @@ class DSACv2Heuristic(BaseHeuristic):
         for (src, tgt), raw_L in zip(shortcuts, raw_dists):
             L = self.config.dist_scale * float(raw_L)
             self.node_pair_gains[src, tgt] = self.get_gain(src, tgt, L)
+
+        if normalize:
+            # Normalize gains to [0, 1] so UCB beta is on the same scale as gains.
+            max_gain = float(np.max(self.node_pair_gains))
+            if max_gain > 0:
+                self.node_pair_gains = self.node_pair_gains / max_gain
+                print(f"  Normalized gains by max={max_gain:.2f}")
 
     def _update_graph_distances(self, source_node: int, target_node: int) -> None:
         d = self.node_pair_graph_dists
@@ -1078,7 +1071,7 @@ class DSACv2Heuristic(BaseHeuristic):
         critic_losses: list[float] = []
         actor_losses: list[float] = []
 
-        self._update_gains()
+        self._update_gains(normalize=True)
 
         for epoch in range(self.config.num_epochs_per_round):
             self._current_epoch = epoch
@@ -1098,7 +1091,7 @@ class DSACv2Heuristic(BaseHeuristic):
                             graduate_fn(self, source_id, target_id)
                         self._update_graph_distances(source_id, target_id)
                         self._update_first_edge_dict(source_id, target_id)
-                        self._update_gains()
+                        self._update_gains(normalize=True)
                         self._graduation_cooldown[pair] = k
 
             if (epoch + 1) % self.config.learn_frequency == 0:
@@ -1109,7 +1102,7 @@ class DSACv2Heuristic(BaseHeuristic):
                         actor_losses.append(a_loss)
 
             if self.config.sampling_method != "uniform" and (epoch + 1) % self.config.gain_update_frequency == 0:
-                self._update_gains()
+                self._update_gains(normalize=True)
 
             if (epoch + 1) % 1 == 0 or epoch == 0:
                 c_str = f"{critic_losses[-1]:.4f}" if critic_losses else "N/A"
@@ -1212,7 +1205,7 @@ class DSACv2Heuristic(BaseHeuristic):
             for j, (s, t) in enumerate(zip(starts, ends)):
                 probs[j] = self.estimate_probability(int(s), int(t), use_multi_rl=use_multi_rl)
 
-            if np.any(probs > 0):
+            if np.any((probs * gains) > 0):
                 scores = probs * gains
             else:
                 scores = gains

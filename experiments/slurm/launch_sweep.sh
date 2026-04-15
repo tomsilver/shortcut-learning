@@ -23,12 +23,12 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-CODE_DIR="/home/de7281/thesis/shortcut-learning"
-SCRATCH_DIR="/scratch/gpfs/TSILVER/de7281/shortcut_learning"
-CONDA_ENV="slap_env"
+CODE_DIR="/n/fs/iterativesl/shortcut-learning"
+CONDA_ENV="/n/fs/iterativesl/slap_env_2"
+SCRATCH_DIR="/n/fs/iterativesl/slap_outputs"
 SLURM_TIME="04:00:00"
 SLURM_CPUS=10
-SLURM_MEM="32G"
+SLURM_MEM="64G"
 DEFAULT_CONFIG="gridworld_continuous"
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -159,9 +159,10 @@ export LAPACK_DIR="/usr/lib64"
 export LIBGFORTRAN_DIR="/usr/lib64"
 export BLAS_DIR="/usr/lib64"
 
-echo "Activating conda environment: ${CONDA_ENV}..."
-source /scratch/gpfs/TSILVER/de7281/miniconda3/etc/profile.d/conda.sh
-conda activate "${CONDA_ENV}"
+# Activate conda environment
+echo "Activating conda environment: $CONDA_ENV..."
+source /usr/local/anaconda3/2024.02/etc/profile.d/conda.sh
+conda activate "$CONDA_ENV"
 
 cd "${CODE_DIR}" || exit 1
 export PYTHONPATH="${CODE_DIR}/src:\$PYTHONPATH"
